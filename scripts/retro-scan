@@ -464,6 +464,16 @@ def due():
     return out, skipped
 
 
+def out_problem(out):
+    """Why --out is refused, or None. It must be a non-symlink path inside <state>/retros/."""
+    allowed = Path(os.path.realpath(overlay.state_dir() / "retros"))
+    if Path(out).is_symlink():
+        return f"--out is a symlink: {out}"
+    if allowed not in Path(os.path.realpath(out)).parents:
+        return f"--out must be a file inside {allowed}"
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Measure Software Factory sessions for the Retro Engine.")
     mode = ap.add_mutually_exclusive_group(required=True)
@@ -475,6 +485,11 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--no-github", action="store_true")
     a = ap.parse_args(argv)
+    if a.out:
+        problem = out_problem(a.out)
+        if problem:
+            print(json.dumps({"error": problem}))
+            return 2
     if a.discover:
         result = discover()
     elif a.due:

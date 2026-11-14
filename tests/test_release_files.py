@@ -55,6 +55,11 @@ class ReleaseFilesTests(unittest.TestCase):
         )
         self.assertIn(f"{count} offline tests", read("README.md"))
 
+    def test_readme_has_a_retro_row_that_does_not_overclaim_privacy(self):
+        row = next(line for line in read("README.md").splitlines() if line.startswith("| **Retro**"))
+        self.assertIn("your messages are never quoted", row)
+        self.assertNotIn("never leave it", row)
+
     def test_readme_team_table_lists_every_agent(self):
         # An agent added without a display name here fails the test on purpose.
         table = read("README.md").split("## Meet the team", 1)[1].split("## Quick start", 1)[0]

@@ -226,11 +226,36 @@ class MeasureTests(unittest.TestCase):
 
     def test_out_writes_the_json_to_the_file_and_prints_its_path(self):
         self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
-        out = self.f.base / "nested" / "m.json"
-        r = subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--since", iso(NOW - 3600),
-                            "--no-github", "--out", str(out)], capture_output=True, text=True, env=self.f.env())
+        out = self.f.state / "retros" / "2026-11-14" / "m.json"
+        r = self.scan_to(out)
         self.assertEqual((r.returncode, r.stdout.strip()), (0, str(out)))
         self.assertEqual(json.loads(out.read_text())["project"], self.repo)
+
+    def scan_to(self, out):
+        return subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--since", iso(NOW - 3600),
+                               "--no-github", "--out", str(out)], capture_output=True, text=True, env=self.f.env())
+
+    def test_out_outside_the_retros_folder_is_refused(self):
+        self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        for out in (self.f.base / "m.json", self.f.state / "overlay" / "entries.jsonl",
+                    self.f.state / "retros" / ".." / "m.json"):
+            r = self.scan_to(out)
+            self.assertEqual(r.returncode, 2, out)
+            self.assertIn("error", json.loads(r.stdout))
+            self.assertFalse(out.exists(), out)
+
+    def test_out_through_a_symlink_is_refused(self):
+        self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        retros = self.f.state / "retros"
+        retros.mkdir(parents=True)
+        victim = self.f.base / "victim.json"
+        victim.write_text("keep")
+        (retros / "link.json").symlink_to(victim)
+        (retros / "dirlink").symlink_to(self.f.base)
+        for out in (retros / "link.json", retros / "dirlink" / "m.json"):
+            self.assertEqual(self.scan_to(out).returncode, 2, out)
+        self.assertEqual(victim.read_text(), "keep")
+        self.assertFalse((self.f.base / "m.json").exists())
 
     def test_github_failure_is_reported_not_fatal(self):
         bin_dir = self.f.base / "bin"
