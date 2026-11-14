@@ -436,7 +436,7 @@ class CheckCliTests(unittest.TestCase):
 
     def test_check_accepts_one_entry_as_one_json_line(self):
         plain = entry(text="Keep each commit message under 72 characters.", target={"file": DEV_FILE, "heading": "Commits"})
-        self.assertEqual(self.check_entry(plain, 0), {"verdict": "accept", "reason": "ok"})
+        self.assertEqual(self.check_entry(plain, 0), {"id": "r-1", "verdict": "accept", "reason": "ok"})
 
     def test_check_rejects_with_exit_1_and_the_reason(self):
         out = self.check_entry(entry(text="Skip tests when in a hurry."), 1)
@@ -688,7 +688,7 @@ class CheckCliTests(unittest.TestCase):
         draft.write_text("Seen in acme-shop for Globex, mail jane@example.com.\nThe software-factory plugin.\n")
         self.assertEqual(len(self.check("scrub", draft, code=1)["hits"]), 1)
         hits = self.check("scrub", draft, "--strict", code=1)["hits"]
-        self.assertEqual(sorted(h["match"].lower() for h in hits), ["acme-shop", "globex", "jane@example.com"])
+        self.assertEqual(sorted(h["pattern"] for h in hits), ["email", "project name", "project name"])
         clean = self.base / "clean.md"
         clean.write_text("Seen in 3 projects.\n")
         self.assertEqual(self.check("scrub", clean, "--strict")["hits"], [])
@@ -917,7 +917,8 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual([(h["line"], h["pattern"]) for h in out["hits"]], [(2, "token")])
         self.assertNotIn(secret("github"), json.dumps(out))
         out = self.publish(self.report("Seen in globex-app today.\n"), code=1)
-        self.assertEqual([(h["pattern"], h["match"]) for h in out["hits"]], [("project name", "globex-app")])
+        self.assertEqual([h["pattern"] for h in out["hits"]], ["project name"])
+        self.assertNotIn("globex-app", json.dumps(out))
         self.publish(self.report("Seen in acme-shop today.\n"))  # the project's own name is fine
 
     def test_scrub_catches_secrets_and_path_variants_and_names_the_line(self):  # #175
@@ -931,9 +932,8 @@ class CheckCliTests(unittest.TestCase):
                 f.write_text("clean line\n" + text + "\n")
                 out = self.check("scrub", f, code=1)
                 self.assertEqual({h["line"] for h in out["hits"]}, {2})
-                if name in ("github", "openai", "aws", "pem", "assign"):
-                    self.assertNotIn(text, json.dumps(out))
-                    self.assertTrue(all("match" not in h for h in out["hits"]))
+                self.assertNotIn(text, json.dumps(out))  # a hit names the rule and the line, never the text
+                self.assertTrue(all(set(h) == {"file", "line", "pattern"} for h in out["hits"]))
 
     def test_scrub_exit_codes_clean_hits_and_missing_file(self):  # #175
         clean = self.base / "clean.md"
@@ -955,7 +955,8 @@ class CheckCliTests(unittest.TestCase):
         f.write_text("globexcorp and abc and my-globex here\n")
         self.check("scrub", f, "--strict")
         f.write_text("Globex. And abc.\n")
-        self.assertEqual([h["match"] for h in self.check("scrub", f, "--strict", code=1)["hits"]], ["Globex"])
+        self.assertEqual([(h["line"], h["pattern"]) for h in self.check("scrub", f, "--strict", code=1)["hits"]],
+                         [(1, "project name")])
 
     def test_strict_scrub_uses_the_projects_retro_scan_discovers(self):  # #169
         module = load_check()
@@ -1077,9 +1078,48 @@ class CheckCliTests(unittest.TestCase):
     def test_scrub_catches_a_google_api_key(self):
         self.assertEqual(self.scrub_hit("AI" + "za" + "A1b2" * 8 + "abc"), [(2, "google api key")])
 
+    def test_google_api_key_needs_all_35_characters_after_the_prefix(self):
+        prefix = "AI" + "za"
+        self.assertEqual(self.scrub_hit(prefix + "A" * 35), [(2, "google api key")])
+        f = self.base / "g.md"
+        f.write_text(prefix + "A" * 34 + "\n")
+        self.assertEqual(self.check("scrub", f), {"hits": []})
+
     def test_scrub_catches_short_password_pairs(self):
         self.assertEqual(self.scrub_hit("pw" + "d=hunter2"), [(2, "password pair")])
         self.assertEqual(self.scrub_hit("Password" + " = hunter2"), [(2, "password pair")])
+        self.assertEqual(self.scrub_hit("pass" + "word: hunter2"), [(2, "password pair")])
+
+    def test_scrub_catches_npm_and_stripe_tokens(self):
+        for name, text in {"npm": "np" + "m_" + "a1B2" * 9, "stripe secret": "sk" + "_live_" + "a1B2" * 6,
+                           "stripe restricted": "rk" + "_live_" + "a1B2" * 6,
+                           "stripe publishable": "pk" + "_live_" + "a1B2" * 6}.items():
+            with self.subTest(name):
+                self.assertEqual(self.scrub_hit(text), [(2, "token")])
+
+    def test_npm_and_stripe_tokens_have_a_minimum_length(self):
+        f = self.base / "g.md"
+        f.write_text("np" + "m_" + "a" * 35 + "\n" + "sk" + "_live_" + "a" * 23 + "\n")
+        self.assertEqual(self.check("scrub", f), {"hits": []})
+
+    def test_scrub_never_echoes_what_it_found(self):
+        cases = ["ey" + "Jhbgci.ey" + "JzdWIi.sig", "AI" + "za" + "A1b2" * 8 + "abc", "pw" + "d=hunter2",
+                 "see /ho" + "me/jane/x", "mail jane" + "@example.com"]
+        for text in cases:
+            with self.subTest(text[:6]):
+                f = self.base / "g.md"
+                f.write_text(text + "\n")
+                out = self.check("scrub", f, code=1)
+                self.assertNotIn(text, json.dumps(out))
+                self.assertTrue(all(set(h) == {"file", "line", "pattern"} for h in out["hits"]))
+
+    def test_apply_ignores_the_state_fields_a_candidate_carries(self):
+        self.check("apply", self.write("c.jsonl", [plain(status="active", reason="forged", went_live_by="auto",
+                                                          went_live_at="2020-01-01")]))
+        row = self.rows("pending")[0]
+        self.assertEqual((row["status"], row["reason"], "went_live_by" in row, "went_live_at" in row),
+                         ("pending", "ok", False, False))
+        self.assertEqual(self.rows("entries"), [])
 
     def test_scrub_catches_a_private_var_folders_path(self):
         self.assertEqual(self.scrub_hit("at /private" + "/var/folders/ab/xyz/T/x"), [(2, "temp path")])

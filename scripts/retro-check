@@ -6,7 +6,7 @@
                                                         it to draft. In auto-fix mode an accepted entry goes active
                                                         only when may_go_live() allows it; every other entry that
                                                         passes waits in pending. Corrupt lines come back as rejects.
-  retro-check check ENTRY.json                          one JSON line {verdict, reason} for one entry (id, kind, class,
+  retro-check check ENTRY.json                          one JSON line {id, verdict, reason} for one entry (id, kind, class,
                                                         role, text, evidence, target). Exit 0 accept, 1 reject or ask,
                                                         2 bad file. Read-only, so it also runs when RETRO_HEADLESS=1
   retro-check approve ID | drop ID | retire ID          after the user's answer. Refuse (exit 2) when RETRO_HEADLESS=1,
@@ -44,28 +44,8 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import overlay  # noqa: E402
+from retro_scrub import COPY_WORDS, LINK_PATTERNS, copied_lines, scrub_patterns, scrub_text  # noqa: E402
 
-HOME_PATH = re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+", re.I)
-TILDE_PATH = re.compile(r"(?<!\w)~/\S")
-HOME_VARIABLE = re.compile(r"\$\{?HOME\b")
-WINDOWS_USER_PATH = re.compile(r"\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+", re.I)
-EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-TOKEN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|"
-                   r"AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})")
-JWT = re.compile(r"\beyJ[\w-]+\.eyJ[\w-]+\.")
-GOOGLE_API_KEY = re.compile(r"\bAIza[0-9A-Za-z_-]{35}")
-PASSWORD_PAIR = re.compile(r"\b(?:passw(?:or)?d|pwd)\s*=\s*\S+", re.I)
-TEMP_PATH = re.compile(r"/private/var/folders/\S*")
-PRIVATE_KEY = re.compile(r"-----BEGIN")
-KEY_ASSIGNMENT = re.compile(r"(?:key|token|secret|passw(?:or)?d)\s*[=:]\s*[\"']?[A-Za-z0-9+/=]{24,}", re.I)
-# (name, pattern, echo the match). A secret is never echoed back, only its line and name.
-SCRUB_PATTERNS = (("home path", HOME_PATH, True), ("tilde path", TILDE_PATH, True),
-                  ("home variable", HOME_VARIABLE, True), ("windows user path", WINDOWS_USER_PATH, True),
-                  ("temp path", TEMP_PATH, True), ("email", EMAIL, True), ("token", TOKEN, False),
-                  ("jwt", JWT, False), ("google api key", GOOGLE_API_KEY, False), ("private key", PRIVATE_KEY, False),
-                  ("key assignment", KEY_ASSIGNMENT, False), ("password pair", PASSWORD_PAIR, False))
-# A report holds no links or images: a viewer fetches an image URL, which would send data out (#201).
-LINK = re.compile(r"\]\(|<img\b|<a\s|\b(?:src|href)\s*=|://|\bdata:[\w.+-]+/[\w.+-]+[;,]", re.I)
 PUBLIC_NAMES = {"software-factory", "open-software-factory"}
 
 # The (agent file, heading) pairs an accepted entry may go live on without the user's yes (auto-fix mode), and only
@@ -82,7 +62,7 @@ HEADLESS_ENV = "RETRO_HEADLESS"
 LESSON_KEY = re.compile(r"[a-z0-9-]{1,40}")
 DUE_FILE = "due.json"  # the launcher lists the due project paths here, in the run folder, out of the agent's reach
 WORK_DIR = "work"  # the only run subfolder the agent writes; the report sits here
-COPY_WORDS = 8  # a report may not share this many words in a row with raw scan text
+STATE_FIELDS = ("status", "reason", "went_live_at", "went_live_by")  # set by retro-check only, never by a candidate
 
 
 class CheckError(Exception):
@@ -148,6 +128,7 @@ def cmd_apply(path, mode_flag):
     ids = {e.get("id") for e in current + waiting}
     results = []
     for cand in rows:
+        cand = {k: v for k, v in cand.items() if k not in STATE_FIELDS}  # only this script sets the entry's state
         verdict, reason = overlay.verdict(cand, active(current))
         if verdict != "reject" and cand["id"] in ids:
             verdict, reason = "reject", "id already in use"
@@ -170,8 +151,9 @@ def cmd_apply(path, mode_flag):
 
 
 def cmd_check(path):
-    verdict, reason = overlay.verdict(load_json(path, dict), active(entries()))
-    return {"verdict": verdict, "reason": reason}, 0 if verdict == "accept" else 1
+    entry = load_json(path, dict)
+    verdict, reason = overlay.verdict(entry, active(entries()))
+    return {"id": entry.get("id"), "verdict": verdict, "reason": reason}, 0 if verdict == "accept" else 1
 
 
 def cmd_approve(entry_id):
@@ -296,23 +278,8 @@ def private_words(own_project=None):
     return sorted(w for w in words if len(w) >= 4 and w not in PUBLIC_NAMES and w != own)
 
 
-def scrub_patterns(strict, own_project=None):
-    patterns = list(SCRUB_PATTERNS)
-    if strict:
-        patterns.append(("link", LINK, False))
-        patterns += [("project name", re.compile(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", re.I), True)
-                     for w in private_words(own_project)]
-    return patterns
-
-
-def scrub_text(label, text, patterns):
-    hits = []
-    for n, line in enumerate(text.splitlines(), 1):
-        seen = overlay.squash(line)  # NFKC and zero-width marks gone, so a split path still matches
-        for name, rx, echo in patterns:
-            for m in rx.finditer(seen):
-                hits.append({"file": str(label), "line": n, "pattern": name, **({"match": m.group(0)} if echo else {})})
-    return hits
+def report_patterns(strict, own_project=None):
+    return scrub_patterns(strict, private_words(own_project) if strict else ())
 
 
 def read_text_file(path):
@@ -323,7 +290,7 @@ def read_text_file(path):
 
 
 def cmd_scrub(paths, strict):
-    patterns = scrub_patterns(strict)
+    patterns = report_patterns(strict)
     hits = [h for p in paths for h in scrub_text(p, read_text_file(p), patterns)]
     return {"hits": hits}, 1 if hits else 0
 
@@ -416,29 +383,6 @@ def raw_scan_texts(run_dir):
     return texts
 
 
-def plain_words(line):
-    """Lower-case words with punctuation and a leading list marker dropped, so quotes and bullets hide no copy."""
-    text = re.sub(r"^\s*(?:[-*+>]|\d+[.)])\s+", " ", overlay.squash(line).lower())
-    return re.sub(r"[\W_]+", " ", text).split()
-
-
-def word_runs(text):
-    words = plain_words(text)
-    return {" ".join(words[i:i + COPY_WORDS]) for i in range(len(words) - COPY_WORDS + 1)}
-
-
-def copied_lines(text, raw_texts):
-    """Line numbers of the report that share COPY_WORDS or more words in a row with any raw text (N1)."""
-    raw = set().union(*map(word_runs, raw_texts))
-    words = [(n, w) for n, line in enumerate(text.splitlines(), 1) for w in plain_words(line)]
-    hit = set()
-    for i in range(len(words) - COPY_WORDS + 1):  # one word stream, so a copy wrapped over two lines still matches
-        window = words[i:i + COPY_WORDS]
-        if " ".join(w for _, w in window) in raw:
-            hit.update(n for n, _ in window)
-    return sorted(hit)
-
-
 def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
     if not SHA.fullmatch(sha):
         raise CheckError("--sha must be 7 to 40 lowercase hex characters")
@@ -462,10 +406,10 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
         text = data.decode("utf-8")
     except ValueError as err:
         raise CheckError(f"{report} is not UTF-8 text") from err
-    links = sorted({h["line"] for h in scrub_text(report, text, [("link", LINK, False)])})
+    links = sorted({h["line"] for h in scrub_text(report, text, LINK_PATTERNS)})
     if links:
         raise CheckError(f"the report may hold no links or images, found on lines {links}")
-    hits = scrub_text(report, text, scrub_patterns(strict=True, own_project=project))
+    hits = scrub_text(report, text, report_patterns(strict=True, own_project=project))
     if hits:
         return {"published": False, "hits": hits}, 1
     copied = copied_lines(text, raw_scan_texts(run_dir))
@@ -537,6 +481,7 @@ def main(argv=None):
         out, code = run(a)
     except (CheckError, OSError, ValueError) as err:  # a clear message and exit 2, never a traceback
         out, code = {"error": str(err)}, 2
+    # check prints one line: the skill and the agent read it as a single verdict, the other commands print lists
     print(json.dumps(out, indent=None if a.cmd == "check" else 1, ensure_ascii=False))
     return code
 
