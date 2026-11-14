@@ -148,7 +148,12 @@ Unit tests in `tests/`, in the existing style, on fixture transcripts:
 
 ## Not checked yet
 
-- Whether `claude -p --agent software-factory:retro` runs headless from launchd with the user's sandbox and auth settings.
+- Checked 2026-11-14 (spike, macOS, scheduler-like launch: `env -i` with only HOME, USER, LOGNAME, SHELL, TMPDIR and a minimal PATH): `claude -p --agent software-factory:<name>` runs headless, loads the plugin agent and needs no prompt. Findings that shape the launcher:
+  - Auth reads the login keychain and fails with "Not logged in" unless USER (and LOGNAME) are set. A bare HOME and PATH is not enough. `retro-daily` must pass HOME, USER, LOGNAME.
+  - The flag is `--allowedTools` (alias `--allowed-tools`); the permission mode flag is `--permission-mode`. The flag takes a variadic list, so the prompt must come before it (`claude -p "<prompt>" --agent ... --allowedTools "..."`), or it swallows the prompt and fails with "Input must be provided".
+  - Rules are comma separated. `Bash(python3 <abs path>/scripts/review-route *)` allowed the script. `Write(<path>/**)` is rejected: only `Edit(<path>)` rules match file writes (they cover all file-editing tools). An absolute path needs a leading double slash: `Edit(//<abs path>/**)` allowed the write, `Edit(<abs path>/**)` did not.
+  - A write outside the rule was denied with "you haven't granted it yet", and no file was created.
+  - The agent's own tool list still applies: `triage-classifier` has no Write tool and refused. The retro agent must list Write and Bash in its frontmatter.
 - How a SessionStart hook can best load the overlay into subagent context (the hook output reaches the main session; subagents may need the Team Lead to pass it in briefs).
 
 ## Out of scope
