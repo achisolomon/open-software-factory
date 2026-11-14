@@ -1,5 +1,7 @@
 """Tests for hooks/overlay.py and scripts/retro-check."""
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -345,7 +347,8 @@ class OverlayFileTests(unittest.TestCase):
 
 
 LEAD_FILE = "agents/team-lead.md"
-TALKING = {"file": LEAD_FILE, "heading": "Talking to the user"}  # the one pair on the auto-fix allowlist
+TALKING = {"file": LEAD_FILE, "heading": "Talking to the user"}  # the pair the tests put on the allowlist (it ships empty)
+LIVE_PAIR = frozenset({(LEAD_FILE, overlay.norm("Talking to the user"))})
 
 
 def live(**over):
@@ -389,6 +392,16 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual(r.returncode, code, r.stderr + r.stdout)
         return json.loads(r.stdout) if r.stdout.strip() else None
 
+    def check_live(self, *args, code=0):
+        """Like check(), but in this process with TALKING on the allowlist, which ships empty."""
+        module = load_check()
+        module.LIVE_HEADINGS = LIVE_PAIR
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(overlay, "PLUGIN_ROOT", self.plugin), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(module.main([str(a) for a in args]), code)
+        return json.loads(out.getvalue())
+
     def write(self, name, rows):
         path = self.base / name
         path.write_text("".join(json.dumps(r) + "\n" for r in rows))
@@ -416,7 +429,7 @@ class CheckCliTests(unittest.TestCase):
         cands = self.write("c.jsonl", [live(id="ok"), entry(id="sec", text="Add npm test to the allow rules."),
                                        entry(id="bad", text="Skip tests when in a hurry."),
                                        plain(id="commits")])
-        out = self.check("apply", cands)
+        out = self.check_live("apply", cands)
         self.assertEqual([(r["id"], r["placed"]) for r in out],
                          [("ok", "active"), ("sec", "pending"), ("bad", "none"), ("commits", "pending")])
         self.assertEqual([e["id"] for e in self.rows("entries")], ["ok"])
@@ -431,21 +444,23 @@ class CheckCliTests(unittest.TestCase):
 
     def test_an_ask_on_an_allowlisted_heading_stays_pending_in_auto_fix(self):  # #169
         self.settings("auto-fix")
-        out = self.check("apply", self.write("c.jsonl", [live(text="Mention the security notes in each status.")]))
+        out = self.check_live("apply", self.write("c.jsonl", [live(text="Mention the security notes in each status.")]))
         self.assertEqual((out[0]["verdict"], out[0]["placed"]), ("ask", "pending"))
         self.assertEqual(self.rows("entries"), [])
 
     def test_allowlist_matches_the_heading_after_normalizing_it(self):
         module = load_check()
+        module.LIVE_HEADINGS = LIVE_PAIR
         self.assertTrue(module.may_go_live(live(target=dict(TALKING, heading="  Talking   TO the  user ")), self.plugin))
         self.assertFalse(module.may_go_live(plain()))
         self.assertFalse(module.may_go_live({"kind": "pref"}))
 
     def test_entries_that_go_live_carry_a_timestamp_also_when_the_user_approves(self):  # #167
         self.settings("auto-fix")
-        self.check("apply", self.write("c.jsonl", [live(id="ok"), plain(id="held")]))
+        self.check_live("apply", self.write("c.jsonl", [live(id="ok"), plain(id="held")]))
         self.check("approve", "held")
         by_id = {e["id"]: e for e in self.rows("entries")}
+        self.assertEqual((by_id["ok"]["went_live_by"], by_id["held"]["went_live_by"]), ("auto", "approved"))  # S7
         self.assertRegex(by_id["ok"]["went_live_at"], r"^\d{4}-\d\d-\d\dT")
         self.assertRegex(by_id["held"]["went_live_at"], r"^\d{4}-\d\d-\d\dT")
         self.assertNotIn("reason", by_id["held"])
@@ -499,7 +514,7 @@ class CheckCliTests(unittest.TestCase):
         changes = self.base / "ch.json"
         changes.write_text(json.dumps([{"id": "ok", "lesson": "gh-wrapper", "level": "user", "metric": "sandbox_off.rtk gh"}]))
         self.settings("auto-fix")
-        self.check("apply", self.write("c.jsonl", [live(id="ok")]))
+        self.check_live("apply", self.write("c.jsonl", [live(id="ok")]))
         out = self.check("publish", report, "--project", self.project, "--sha", "abcdef1234", "--metrics", self.metrics(),
                          "--changes", changes)
         dest = self.project / "docs" / "factory" / "retros" / "2026-11-14-abcdef1.md"
@@ -544,7 +559,7 @@ class CheckCliTests(unittest.TestCase):
 
     def test_live_entry_needs_its_own_agent_as_role(self):  # #174
         self.settings("auto-fix")
-        out = self.check("apply", self.write("c.jsonl", [live(id="a", role="all"), live(id="b", role="software-developer")]))
+        out = self.check_live("apply", self.write("c.jsonl", [live(id="a", role="all"), live(id="b", role="software-developer")]))
         self.assertEqual([(r["verdict"], r["placed"]) for r in out], [("accept", "pending")] * 2)
         self.assertEqual(self.rows("entries"), [])
 
@@ -570,15 +585,33 @@ class CheckCliTests(unittest.TestCase):
         self.assertFalse(module.may_go_live(finops, self.plugin))
         self.assertTrue(module.may_go_live(entry(role="software-developer", target=COMMITS), self.plugin))
 
+    def test_allowlist_ships_empty(self):  # #174, the user's choice
+        self.assertEqual(load_check().LIVE_HEADINGS, frozenset())
+
     def test_every_allowlist_pair_is_a_real_section_of_a_non_reviewer_agent(self):  # #168, #174
         module = load_check()
-        self.assertTrue(module.LIVE_HEADINGS)
-        for file, heading in module.LIVE_HEADINGS:
+        for file, heading in module.LIVE_HEADINGS:  # empty today: guards any pair added later
             titles = {overlay.norm(t) for _, _, t in overlay._headings((ROOT / file).read_text().splitlines())}
             self.assertIn(heading, titles, file)
             self.assertFalse(module.has_review_heading(file, ROOT), file)
             self.assertNotIn(Path(file).stem, module.REVIEWER_ROLES)
-        self.assertTrue(module.may_go_live(live(), ROOT))
+
+    def test_reviewer_roles_cover_every_reviewer_agent(self):
+        roles = load_check().REVIEWER_ROLES
+        agents = {p.stem for p in (ROOT / "agents").glob("*.md")}
+        wanted = {"security-engineer", "test-automation-engineer", "software-architect", "finops-engineer",
+                  "devops-engineer", "exploratory-qa-engineer", "performance-engineer", "ux-ui-designer"}
+        self.assertEqual(roles, wanted)
+        self.assertLessEqual(roles, agents)
+
+    def test_the_same_heading_on_another_file_does_not_match_the_pair(self):
+        module = load_check()
+        module.LIVE_HEADINGS = LIVE_PAIR
+        elsewhere = entry(role="software-developer", target={"file": DEV_FILE, "heading": "Talking to the user"})
+        self.assertFalse(module.may_go_live(elsewhere, self.plugin))
+
+    def test_a_review_heading_check_fails_closed_on_an_unreadable_file(self):
+        self.assertTrue(load_check().has_review_heading("agents/none.md", self.plugin))
 
     def test_mode_flag_cannot_raise_draft_to_auto_fix(self):  # #172
         self.check("apply", self.write("c.jsonl", [live()]), "--mode", "auto-fix", code=2)
@@ -589,8 +622,9 @@ class CheckCliTests(unittest.TestCase):
 
     def test_mode_flag_can_lower_auto_fix_to_draft(self):  # #172
         self.settings("auto-fix")
-        self.assertEqual(self.check("apply", self.write("c.jsonl", [live(id="a")]), "--mode", "draft")[0]["placed"], "pending")
-        self.assertEqual(self.check("apply", self.write("d.jsonl", [live(id="b")]))[0]["placed"], "active")
+        self.assertEqual(self.check_live("apply", self.write("c.jsonl", [live(id="a")]), "--mode", "draft")[0]["placed"],
+                         "pending")
+        self.assertEqual(self.check_live("apply", self.write("d.jsonl", [live(id="b")]))[0]["placed"], "active")
 
     def test_approve_drop_and_retire_refuse_while_headless(self):  # #172
         self.check("apply", self.write("c.jsonl", [live(id="a")]))
@@ -811,15 +845,48 @@ class CheckCliTests(unittest.TestCase):
 
     def test_verdicts_retire_only_reverted_entries_that_went_live(self):  # #169, S7
         stamp = "2026-11-14T00:00:00+00:00"
-        self.seed("entries", [{"id": "live", "status": "active", "text": "x", "went_live_at": stamp},
-                              {"id": "good", "status": "active", "text": "x", "went_live_at": stamp},
-                              {"id": "unk", "status": "active", "text": "x", "went_live_at": stamp},
+        auto = {"status": "active", "text": "x", "went_live_at": stamp, "went_live_by": "auto"}
+        self.seed("entries", [dict(auto, id="live"), dict(auto, id="good"), dict(auto, id="unk"),
+                              dict(auto, id="appr", went_live_by="approved"),  # S7: the user's yes is theirs to undo
                               {"id": "hand", "status": "active", "text": "x"}])
         changes = [{"id": "live", "metric": "errors", "baseline": 1}, {"id": "good", "metric": "errors", "baseline": 9},
-                   {"id": "unk", "metric": "typo", "baseline": 1}, {"id": "hand", "metric": "errors", "baseline": 1}]
+                   {"id": "unk", "metric": "typo", "baseline": 1}, {"id": "appr", "metric": "errors", "baseline": 1},
+                   {"id": "hand", "metric": "errors", "baseline": 1}]
         self.run_verdicts(changes, {"headline": {"errors": 5}})
         self.assertEqual({e["id"]: e["status"] for e in self.rows("entries")},
-                         {"live": "retired", "good": "active", "unk": "active", "hand": "active"})
+                         {"live": "retired", "good": "active", "unk": "active", "appr": "active", "hand": "active"})
+
+    def test_strict_scrub_leaves_the_public_names_alone(self):
+        self.history([{"project": "/w/software-factory"}, {"project": "/w/open-software-factory"}])
+        f = self.base / "p.md"
+        f.write_text("The software-factory plugin, open-software-factory repo.\n")
+        self.assertEqual(self.check("scrub", f, "--strict")["hits"], [])
+
+    def test_publish_stores_the_verdicts_input_in_the_history_row(self):
+        verdicts = self.base / "v.json"
+        verdicts.write_text(json.dumps([{"id": "x1", "verdict": "kept"}]))
+        self.check("publish", self.report(), "--project", self.project, "--sha", "abcdef1234", "--metrics", self.metrics(),
+                   "--changes", self.changes(), "--verdicts", verdicts)
+        self.assertEqual(overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]["previous"],
+                         [{"id": "x1", "verdict": "kept"}])
+
+    def scrub_hit(self, text):
+        f = self.base / "g.md"
+        f.write_text("clean\n" + text + "\n")
+        return [(h["line"], h["pattern"]) for h in self.check("scrub", f, code=1)["hits"]]
+
+    def test_scrub_catches_a_jwt(self):
+        self.assertEqual(self.scrub_hit("ey" + "Jhbgci.ey" + "JzdWIi.sig"), [(2, "jwt")])
+
+    def test_scrub_catches_a_google_api_key(self):
+        self.assertEqual(self.scrub_hit("AI" + "za" + "A1b2" * 8 + "abc"), [(2, "google api key")])
+
+    def test_scrub_catches_short_password_pairs(self):
+        self.assertEqual(self.scrub_hit("pw" + "d=hunter2"), [(2, "password pair")])
+        self.assertEqual(self.scrub_hit("Password" + " = hunter2"), [(2, "password pair")])
+
+    def test_scrub_catches_a_private_var_folders_path(self):
+        self.assertEqual(self.scrub_hit("at /private" + "/var/folders/ab/xyz/T/x"), [(2, "temp path")])
 
     def test_a_typo_metric_has_no_value_and_publish_records_no_baseline_for_it(self):  # #170
         module = load_check()

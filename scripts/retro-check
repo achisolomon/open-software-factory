@@ -9,7 +9,7 @@
   retro-check approve ID | drop ID | retire ID          after the user's answer. Refuse (exit 2) when RETRO_HEADLESS=1,
                                                         which the headless launcher sets. approve re-checks the entry
   retro-check verdicts --project P --metrics FILE       kept, reverted or unknown for the previous retro's changes;
-                                                        retires reverted entries that went live
+                                                        retires reverted entries that went live on their own (auto)
   retro-check lessons                                   projects, changes and kept counts per lesson key
   retro-check scrub FILE... [--strict]                  exit 1 if a file holds a secret, a home path or an email;
                                                         --strict also flags discovered project names and
@@ -43,23 +43,27 @@ WINDOWS_USER_PATH = re.compile(r"\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+", re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 TOKEN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|"
                    r"AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})")
+JWT = re.compile(r"\beyJ[\w-]+\.eyJ[\w-]+\.")
+GOOGLE_API_KEY = re.compile(r"\bAIza[0-9A-Za-z_-]{35}")
+PASSWORD_PAIR = re.compile(r"\b(?:passw(?:or)?d|pwd)\s*=\s*\S+", re.I)
+TEMP_PATH = re.compile(r"/private/var/folders/\S*")
 PRIVATE_KEY = re.compile(r"-----BEGIN")
 KEY_ASSIGNMENT = re.compile(r"(?:key|token|secret|passw(?:or)?d)\s*[=:]\s*[\"']?[A-Za-z0-9+/=]{24,}", re.I)
 # (name, pattern, echo the match). A secret is never echoed back, only its line and name.
 SCRUB_PATTERNS = (("home path", HOME_PATH, True), ("tilde path", TILDE_PATH, True),
                   ("home variable", HOME_VARIABLE, True), ("windows user path", WINDOWS_USER_PATH, True),
-                  ("email", EMAIL, True), ("token", TOKEN, False), ("private key", PRIVATE_KEY, False),
-                  ("key assignment", KEY_ASSIGNMENT, False))
+                  ("temp path", TEMP_PATH, True), ("email", EMAIL, True), ("token", TOKEN, False),
+                  ("jwt", JWT, False), ("google api key", GOOGLE_API_KEY, False), ("private key", PRIVATE_KEY, False),
+                  ("key assignment", KEY_ASSIGNMENT, False), ("password pair", PASSWORD_PAIR, False))
 PUBLIC_NAMES = {"software-factory", "open-software-factory"}
 
-# The only (agent file, heading) pairs an accepted entry may go live on without the user's yes (auto-fix mode), and
-# only for that file's own agent: how the Team Lead words its updates to the user, never what any role may skip or do.
-# Headings are compared after overlay.norm(). Why this is so short: #161 (auto-fix is opt-in) and #174 (an entry may
-# not carry a role other than its file's agent, never `all`, never a reviewer; "Reply" and "Clean code" were dropped).
-# The Architect's "Working style" is not listed because the Architect is a reviewer role. Add a pair only after
-# reading the section. The spec records this list in Task 11 (#168).
-LIVE_HEADINGS = frozenset({("agents/team-lead.md", overlay.norm("Talking to the user"))})
-REVIEWER_ROLES = frozenset({"security-engineer", "test-automation-engineer", "software-architect"})
+# The (agent file, heading) pairs an accepted entry may go live on without the user's yes (auto-fix mode), and only
+# for that file's own agent. Headings are compared after overlay.norm(). The list is empty by the user's choice on
+# #174: every entry waits for the user's yes. A pair may be added only with a test that its section holds no gate
+# wording. The spec records this list in Task 11 (#168).
+LIVE_HEADINGS = frozenset()
+REVIEWER_ROLES = frozenset({"security-engineer", "test-automation-engineer", "software-architect", "finops-engineer",
+                            "devops-engineer", "exploratory-qa-engineer", "performance-engineer", "ux-ui-designer"})
 REVIEW_HEADING = re.compile(r"^#{1,6}\s.*review", re.I | re.M)
 SHA = re.compile(r"[0-9a-f]{7,40}")
 USER_ONLY = ("approve", "drop", "retire")
@@ -136,7 +140,7 @@ def cmd_apply(path, mode_flag):
         if verdict != "reject":
             e = overlay.stamp(cand)
             if verdict == "accept" and mode == "auto-fix" and may_go_live(cand):
-                e["status"], e["went_live_at"], placed = "active", now(), "active"  # for the next session's list
+                e["status"], e["went_live_at"], e["went_live_by"], placed = "active", now(), "auto", "active"
                 current.append(e)
             else:
                 e["status"], e["reason"], placed = "pending", reason, "pending"
@@ -159,7 +163,7 @@ def cmd_approve(entry_id):
     if verdict == "reject":  # the user's yes covers an ask, never a reject
         return {"error": reason}, 1
     e = overlay.stamp(found[0])
-    e["status"], e["went_live_at"] = "active", now()  # approved entries show in the next session's list too (#167)
+    e["status"], e["went_live_at"], e["went_live_by"] = "active", now(), "approved"  # shows in the next list too (#167)
     e.pop("reason", None)
     # entries first: a crash between the two leaves the id in both files, and a re-approve replaces it
     overlay.write_jsonl(overlay.overlay_file("entries"), [x for x in current if x.get("id") != entry_id] + [e])
@@ -219,7 +223,7 @@ def cmd_verdicts(project, metrics_path):
     if not rows:
         return [], 0
     metrics = load_json(metrics_path, dict)
-    went_live = {e.get("id") for e in entries() if e.get("went_live_at")}  # never retire an entry the user wrote
+    went_live = {e.get("id") for e in entries() if e.get("went_live_by") == "auto"}  # the user's own yes is theirs to undo
     out = []
     for ch in rows[-1].get("changes") or []:
         if not ch.get("metric"):
