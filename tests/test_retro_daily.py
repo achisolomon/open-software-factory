@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_DENIED = [
     "WebFetch", "WebSearch", "Agent", "mcp__*", "Read(//h/.ssh/**)", "Read(//h/.aws/**)", "Read(//h/.config/gcloud/**)",
     "Read(//w/alpha/**/.env*)", "Read(//w/alpha/**/*.pem)", "Read(//w/alpha/**/*.key)", "Read(//w/alpha/**/*.tfstate*)",
-    "Read(//w/alpha/**/credentials*.json)"]
+    "Read(//w/alpha/**/credentials*.json)", "Read(//w/alpha/**/.npmrc)", "Read(//w/alpha/**/.netrc)",
+    "Read(//w/alpha/**/.pypirc)", "Read(//w/alpha/**/id_*)", "Read(//w/alpha/**/*.p12)"]
 EXPECTED_TOOLS = ([
     "Read(//h/.software-factory/retros/2026-11-14/alpha/**)", "Read(//h/.software-factory/overlay/**)",
     "Read(//h/.software-factory/upstream/**)", "Read(//opt/plugin/**)", "Read(//w/alpha/**)",
@@ -221,12 +222,39 @@ class RetroDailyTests(unittest.TestCase):
         with mock.patch.object(self.daily.subprocess, "run", return_value=scan):
             self.assertEqual(self.daily.scan_due(Path("/opt/plugin")), ([{"project": "/w/alpha"}], None))
 
+    def plant(self, cache, marketplace, versions):
+        for v in versions:
+            (cache / marketplace / "software-factory" / v / "agents").mkdir(parents=True)
+            (cache / marketplace / "software-factory" / v / "agents" / "retro.md").write_text("x")
+
     def test_newest_plugin_copy_wins(self):
         cache = self.base / "cache"
-        for v in ("0.9.0", "0.10.0", "0.9.5"):
-            (cache / "mkt" / "software-factory" / v / "agents").mkdir(parents=True)
-            (cache / "mkt" / "software-factory" / v / "agents" / "retro.md").write_text("x")
+        self.plant(cache, "software-factory-marketplace", ("0.9.0", "0.10.0", "0.9.5"))
         self.assertEqual(self.daily.newest_plugin(cache).name, "0.10.0")
+
+    def test_a_copy_from_another_marketplace_is_never_picked(self):  # #183
+        cache = self.base / "cache"
+        self.plant(cache, "lookalike-marketplace", ("99.0.0",))
+        self.assertIsNone(self.daily.newest_plugin(cache))
+        self.plant(cache, "software-factory-marketplace", ("0.9.0",))
+        self.assertEqual(self.daily.newest_plugin(cache).name, "0.9.0")
+
+    def test_a_project_that_resolves_to_home_a_parent_of_home_or_root_is_too_broad(self):  # #183
+        home = self.base / "users" / "pat"
+        link = self.base / "link-to-home"
+        home.mkdir(parents=True)
+        link.symlink_to(home)
+        inside = home / "work" / "alpha"
+        inside.mkdir(parents=True)
+        with mock.patch.object(self.daily.Path, "home", return_value=home):
+            for broad in (home, home.parent, link, "/", home / "work" / ".."):
+                self.assertTrue(self.daily.too_broad(str(broad)), broad)
+            self.assertFalse(self.daily.too_broad(str(inside)))
+
+    def test_project_secret_files_are_denied_to_the_agent(self):  # #183
+        denied = self.daily.disallowed_tools(Path("/h"), "/w/alpha")
+        for glob in (".npmrc", ".netrc", ".pypirc", "id_*", "*.p12"):
+            self.assertIn(f"Read(//w/alpha/**/{glob})", denied)
 
 
 class RetroScheduleTests(unittest.TestCase):

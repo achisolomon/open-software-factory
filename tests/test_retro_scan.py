@@ -251,6 +251,16 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertFalse((self.f.state / "overlay" / "due.json").exists())
 
+    def test_due_out_for_a_project_the_scan_did_not_discover_is_refused(self):  # #183
+        other = self.f.base / "elsewhere"
+        other.mkdir()
+        run_dir = self.f.state / "retros" / "2026-11-14"
+        r = subprocess.run([sys.executable, str(SCRIPT), "--project", str(other), "--no-github",
+                            "--due-out", str(run_dir)], capture_output=True, text=True, env=self.f.env())
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("discovers", r.stdout)
+        self.assertFalse((run_dir / "due.json").exists())
+
     def test_out_outside_the_retros_folder_is_refused(self):
         self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
         for out in (self.f.base / "m.json", self.f.state / "overlay" / "entries.jsonl",

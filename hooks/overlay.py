@@ -12,7 +12,9 @@ The entry check fails closed: an entry that is not plainly harmless waits for th
 decides which of those is rejected outright. Entry text is untrusted (it comes from transcripts and issue text).
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -52,6 +54,8 @@ ROLE_WORDS = ("architect", "ux", "designer", "finops", "devops", "qa", "pm", "le
 NEGATION_BEFORE =re.compile(r"(?:\b(?:not|never|no|without|stop)|n't)\s+$")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCES = ("```", "~~~")
+# Direction controls can reorder printed text; the other Cf marks (zero-width) are only folded away for keyword checks.
+BIDI_CONTROLS = frozenset("‪‫‬‭‮⁦⁧⁨⁩‎‏؜")
 
 
 def state_dir():
@@ -73,6 +77,17 @@ def settings():
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+@contextmanager
+def locked():
+    """Exclusive lock on <state>/overlay/.lock, shared by retro-check and the SessionStart refresh, so two read-modify-
+    write runs never interleave. Blocks until the other holder is done."""
+    lock_path = overlay_file("entries").with_name(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 def read_jsonl_counted(path):
@@ -210,8 +225,8 @@ def shape_problem(entry, roles):
         return "missing text"
     if len(text) > MAX_TEXT:
         return f"text over {MAX_TEXT} characters"
-    if any(unicodedata.category(c) == "Cc" and c != "\n" for c in text):
-        return "text has a control character"
+    if any((unicodedata.category(c) == "Cc" and c != "\n") or c in BIDI_CONTROLS for c in text):
+        return "text has a control or direction character"
     lines = text.splitlines()
     if len(lines) > MAX_TEXT_LINES:
         return f"text over {MAX_TEXT_LINES} lines"

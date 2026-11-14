@@ -25,7 +25,9 @@ AGENT_TIMEOUT = 3600
 WORK_DIR = "work"  # the agent's only run subfolder; keep in step with retro-check
 DISALLOWED = ("WebFetch", "WebSearch", "Agent", "mcp__*")
 SECRET_FOLDERS = (".ssh", ".aws", ".config/gcloud")  # never readable, even if a scoped rule would cover them
-SECRET_PROJECT_GLOBS = ("**/.env*", "**/*.pem", "**/*.key", "**/*.tfstate*", "**/credentials*.json")
+SECRET_PROJECT_GLOBS = ("**/.env*", "**/*.pem", "**/*.key", "**/*.tfstate*", "**/credentials*.json", "**/.npmrc",
+                        "**/.netrc", "**/.pypirc", "**/id_*", "**/*.p12")
+MARKETPLACE = "software-factory-marketplace"  # the plugin is taken from this marketplace's cache only, never a lookalike
 MAX_PROJECTS_PER_DAY = 5
 LOG_LIMIT = 1_000_000  # bytes; a bigger retro.log moves to retro.log.1
 
@@ -40,7 +42,7 @@ def version_key(path):
 
 def newest_plugin(cache=None):
     cache = cache or Path.home() / ".claude" / "plugins" / "cache"
-    found = [p.parents[1] for p in cache.glob("*/software-factory/*/agents/retro.md")]
+    found = [p.parents[1] for p in cache.glob(f"{MARKETPLACE}/software-factory/*/agents/retro.md")]
     return max(found, key=version_key) if found else None
 
 
@@ -146,9 +148,14 @@ def agent_env():
     return env
 
 
+def too_broad(project):
+    """True for the home folder, any folder above it (such as /Users or /), or a path that resolves to one."""
+    return Path.home().resolve().is_relative_to(Path(project).resolve())  # a project inside home is fine
+
+
 def run_agent(root, state, run_dir, project, slug, log):
     """Failure word, or None when the headless run succeeded."""
-    if Path(project["project"]) in (Path.home(), Path("/")):
+    if too_broad(project["project"]):
         return "bad-project"  # a read rule on the whole home folder or disk would defeat the scoping (#197)
     problem = scan_project(root, run_dir, project, slug)
     if problem:

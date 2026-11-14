@@ -15,6 +15,7 @@ import unittest
 from test_hooks import GOOD_REPLY, run
 
 TEST = "software-factory:test-automation-engineer"
+RETRO = "software-factory:retro"
 
 
 class LeakTestCase(unittest.TestCase):
@@ -61,15 +62,18 @@ class WriteOutsideProjectTests(LeakTestCase):
         state = self.parent / "state"
         self.env["SOFTWARE_FACTORY_HOME"] = str(state)
         run = state / "retros" / "2026-11-14" / "app"
-        self.assertIsNone(self.write(run / "work" / "report.md"))
-        self.assertIsNone(self.write(state / "upstream" / "lesson.md"))
+        self.assertIsNone(self.write(run / "work" / "report.md", agent=RETRO))
+        self.assertIsNone(self.write(state / "upstream" / "lesson.md", agent=RETRO))
+        for other_agent in (TEST, "software-factory:software-developer"):  # #183: only the Retro agent
+            self.assertIsNotNone(self.write(run / "work" / "report.md", agent=other_agent), other_agent)
+            self.assertIsNotNone(self.write(state / "upstream" / "lesson.md", agent=other_agent), other_agent)
         for refused in (state / "overlay" / "entries.jsonl", run / "due.json",
                         run / "app.json", state / "retro-failed",
                         state / "retros" / "2026-11-14" / "work" / "report.md",  # the old shared folder (#200)
                         run / "work",  # the folder itself is not a file
                         run / "work" / ".." / "due.json",
                         state / "upstream" / ".." / "overlay" / "entries.jsonl"):
-            self.assertIsNotNone(self.write(refused), refused)
+            self.assertIsNotNone(self.write(refused, agent=RETRO), refused)
 
     def test_a_symlink_inside_retro_work_cannot_reach_the_overlay(self):
         state = self.parent / "state"
@@ -78,7 +82,7 @@ class WriteOutsideProjectTests(LeakTestCase):
         work = state / "retros" / "2026-11-14" / "app" / "work"
         work.mkdir(parents=True)
         (work / "link").symlink_to(state / "overlay")
-        self.assertIsNotNone(self.write(work / "link" / "entries.jsonl"))
+        self.assertIsNotNone(self.write(work / "link" / "entries.jsonl", agent=RETRO))
 
     def test_main_session_and_other_agents_are_not_limited(self):
         self.assertIsNone(self.write(self.parent / "x.md", agent_id=""))

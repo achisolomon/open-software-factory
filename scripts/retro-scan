@@ -464,6 +464,9 @@ def main(argv=None):
             print(f"retro-scan: skipped {item['project']}: {item['reason']}", file=sys.stderr)
     else:
         root = os.path.realpath(a.project)
+        if a.due_out and root not in {p["project"] for p in discover()}:
+            print(json.dumps({"error": f"--due-out only for a project this scan discovers: {root}"}))
+            return 2
         since = window_start(root, a.since)
         if since is None:
             ap.error(f"--since is not an ISO time: {a.since}")
