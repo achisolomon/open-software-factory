@@ -483,10 +483,13 @@ def main(argv=None):
     ap.add_argument("--since")
     ap.add_argument("--branch")
     ap.add_argument("--out")
+    ap.add_argument("--due-out", help="with --project: also write <folder>/due.json, as retro-daily does")
     ap.add_argument("--no-github", action="store_true")
     a = ap.parse_args(argv)
-    if a.out:
-        problem = out_problem(a.out)
+    if a.due_out and not a.project:
+        ap.error("--due-out needs --project")
+    for target in (a.out, a.due_out and str(Path(a.due_out) / "due.json")):
+        problem = target and out_problem(target)
         if problem:
             print(json.dumps({"error": problem}))
             return 2
@@ -504,6 +507,9 @@ def main(argv=None):
         result = measure(root, since, branch=a.branch, with_github=not a.no_github)
     if SKIPPED and not a.project:
         print(f"retro-scan: skipped {len(SKIPPED)} unreadable transcript file(s)", file=sys.stderr)
+    if a.due_out:  # the in-session retro cannot write this file itself (#198); same format as retro-daily
+        Path(a.due_out).mkdir(parents=True, exist_ok=True)
+        (Path(a.due_out) / "due.json").write_text(json.dumps([root]) + "\n", encoding="utf-8")
     text = json.dumps(result, indent=1, ensure_ascii=False)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)

@@ -235,6 +235,22 @@ class MeasureTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--since", iso(NOW - 3600),
                                "--no-github", "--out", str(out)], capture_output=True, text=True, env=self.f.env())
 
+    def test_due_out_writes_due_json_like_the_daily_launcher(self):
+        self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        run_dir = self.f.state / "retros" / "2026-11-14"
+        r = subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--since", iso(NOW - 3600),
+                            "--no-github", "--out", str(run_dir / "m.json"), "--due-out", str(run_dir)],
+                           capture_output=True, text=True, env=self.f.env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((run_dir / "due.json").read_text(), json.dumps([self.repo]) + "\n")
+
+    def test_due_out_outside_the_retros_folder_is_refused(self):
+        r = subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--no-github",
+                            "--due-out", str(self.f.state / "overlay")], capture_output=True, text=True,
+                           env=self.f.env())
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse((self.f.state / "overlay" / "due.json").exists())
+
     def test_out_outside_the_retros_folder_is_refused(self):
         self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
         for out in (self.f.base / "m.json", self.f.state / "overlay" / "entries.jsonl",

@@ -57,6 +57,27 @@ class WriteOutsideProjectTests(LeakTestCase):
         self.assertIsNotNone(self.write("/private/tmp/claude-501/serve.sh"))  # loose in $TMPDIR stays denied
         self.assertIsNotNone(self.write("/private/tmp/claude-501/-Users-x-proj/notes.md"))
 
+    def test_allows_only_the_retro_work_and_upstream_folders_of_the_state(self):
+        state = self.parent / "state"
+        self.env["SOFTWARE_FACTORY_HOME"] = str(state)
+        self.assertIsNone(self.write(state / "retros" / "2026-11-14" / "work" / "report.md"))
+        self.assertIsNone(self.write(state / "upstream" / "lesson.md"))
+        for refused in (state / "overlay" / "entries.jsonl", state / "retros" / "2026-11-14" / "due.json",
+                        state / "retros" / "2026-11-14" / "app.json", state / "retro-failed",
+                        state / "retros" / "2026-11-14" / "work",  # the folder itself is not a file
+                        state / "retros" / "2026-11-14" / "work" / ".." / "due.json",
+                        state / "upstream" / ".." / "overlay" / "entries.jsonl"):
+            self.assertIsNotNone(self.write(refused), refused)
+
+    def test_a_symlink_inside_retro_work_cannot_reach_the_overlay(self):
+        state = self.parent / "state"
+        self.env["SOFTWARE_FACTORY_HOME"] = str(state)
+        (state / "overlay").mkdir(parents=True)
+        work = state / "retros" / "2026-11-14" / "work"
+        work.mkdir(parents=True)
+        (work / "link").symlink_to(state / "overlay")
+        self.assertIsNotNone(self.write(work / "link" / "entries.jsonl"))
+
     def test_main_session_and_other_agents_are_not_limited(self):
         self.assertIsNone(self.write(self.parent / "x.md", agent_id=""))
         self.assertIsNone(self.write(self.parent / "x.md", agent="Explore"))

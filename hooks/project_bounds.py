@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 
+import overlay
 from factory_scope import project_root
 
 FACTORY_AGENTS = {path.stem for path in (Path(__file__).resolve().parents[1] / "agents").glob("*.md")}
@@ -21,9 +22,19 @@ FACTORY_AGENTS = {path.stem for path in (Path(__file__).resolve().parents[1] / "
 HARNESS_SCRATCHPAD = re.compile(r"^/private/tmp/claude-\d+/[^/]+/[0-9a-f-]{36}/scratchpad(/|$)")
 
 
+def retro_state_folder(real):
+    """True for <state>/retros/<day>/work/** and <state>/upstream/** only (#198); due.json, scans and overlay/ stay
+    launcher-owned. real is already resolved, and so is the state folder, so `..` and symlinks cannot escape."""
+    state = Path(os.path.realpath(overlay.state_dir()))
+    if state / "upstream" in real.parents:
+        return True
+    parts = real.relative_to(state).parts if state in real.parents else ()
+    return len(parts) >= 4 and parts[0] == "retros" and parts[2] == "work"
+
+
 def outside(path, root, cwd):
     real = Path(os.path.realpath(os.path.join(cwd, os.path.expanduser(path))))
-    if HARNESS_SCRATCHPAD.match(str(real)):
+    if HARNESS_SCRATCHPAD.match(str(real)) or retro_state_folder(real):
         return False
     return real != root and root not in real.parents
 
