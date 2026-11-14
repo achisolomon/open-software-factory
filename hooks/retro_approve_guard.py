@@ -7,7 +7,8 @@ import json
 import re
 import sys
 
-USER_ONLY = re.compile(r"\bretro-check['\"]?\s+(?:approve|drop|retire|keep|repair)\b")
+# Hygiene guard for the plain spelling, not a security boundary: the real control is the user's yes in the main session.
+USER_ONLY =re.compile(r"\bretro-check['\"]?\s+(?:approve|drop|retire|keep|repair)\b")
 
 
 def main():

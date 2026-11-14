@@ -340,10 +340,29 @@ def cmd_scrub(paths, strict):
     return {"hits": hits}, 1 if hits else 0
 
 
+def draft_file_problems(raw_and_numstat, draft_text):
+    """Problems with which files changed: only a plain content edit (status M, same mode, text) of a file the draft names
+    is allowed. A rename, copy, mode change, binary change or another file has no +/- lines to catch it."""
+    problems = []
+    for line in raw_and_numstat.splitlines():
+        if line.startswith(":"):  # :<old mode> <new mode> <old sha> <new sha> <status>\t<path>[\t<path>]
+            meta, _, paths = line.partition("\t")
+            old_mode, new_mode, status = meta.split()[0][1:], meta.split()[1], meta.split()[-1]
+            path = paths.split("\t")[-1]
+            if status != "M" or old_mode != new_mode:
+                problems.append(f"changed kind of file: {status} {path}")
+            if path not in draft_text:
+                problems.append(f"file not named in the draft: {path}")
+        elif line.startswith("-\t-\t"):
+            problems.append(f"binary: {line.split(chr(9))[-1]}")
+    return problems
+
+
 def cmd_draft_diff(draft, repo):
     """The repo's uncommitted change (git diff HEAD) must only add lines the draft shows: no deletion, no untracked
     file, no added line that is not a line of the draft (#204 item 5). Blank added lines pass."""
-    shown = {line.strip() for line in read_text_file(draft).splitlines() if line.strip()}
+    draft_text = read_text_file(draft)
+    shown = {line.strip() for line in draft_text.splitlines() if line.strip()}
 
     def git(*args):
         run = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
@@ -352,9 +371,15 @@ def cmd_draft_diff(draft, repo):
         return run.stdout
 
     extra = [f"untracked: {l[3:]}" for l in git("status", "--porcelain").splitlines() if l.startswith("??")]
+    extra += draft_file_problems(git("diff", "HEAD", "--raw", "--numstat", "--no-color"), draft_text)
     added = 0
+    in_header = False
     for line in git("diff", "HEAD", "--unified=0", "--no-color").splitlines():
-        if line.startswith(("+++", "---")) or line[:1] not in ("+", "-"):
+        if line.startswith("diff --git"):
+            in_header = True  # the ---/+++ lines up to the first @@ are file headers; later ones are content
+        elif line.startswith("@@"):
+            in_header = False
+        if in_header or line[:1] not in ("+", "-"):
             continue
         if line[0] == "-":
             extra.append(line)

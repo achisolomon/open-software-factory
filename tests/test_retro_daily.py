@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import io
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,8 @@ EXPECTED_TOOLS = ([
     "Read(//h/.software-factory/retros/2026-11-14/alpha/**)", "Read(//h/.software-factory/overlay/**)",
     "Read(//h/.software-factory/upstream/**)", "Read(//opt/plugin/**)", "Read(//w/alpha/**)",
     "Bash(python3 /opt/plugin/scripts/retro-check apply *)",
-    "Bash(python3 /opt/plugin/scripts/retro-check verdicts --project *)",
+    "Bash(python3 /opt/plugin/scripts/retro-check verdicts --project /w/alpha "
+    "--metrics /h/.software-factory/retros/2026-11-14/alpha/alpha.json)",
     "Bash(python3 /opt/plugin/scripts/retro-check lessons)",
     "Bash(python3 /opt/plugin/scripts/retro-check scrub *)",
     "Bash(python3 /opt/plugin/scripts/retro-check publish *)",
@@ -94,11 +96,18 @@ class RetroDailyTests(unittest.TestCase):
         self.assertFalse((self.state / "retro-failed").exists())
 
     def test_allowed_tools_string_is_exact(self):  # R7
-        self.assertEqual(self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha"), EXPECTED_TOOLS)
+        self.assertEqual(self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha", "alpha"), EXPECTED_TOOLS)
         self.assertEqual(self.daily.disallowed_tools(Path("/h"), "/w/alpha"), EXPECTED_DENIED)
 
+    def test_verdicts_rule_is_the_exact_argv_of_this_run_with_no_wildcard(self):  # #204
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha", "alpha")
+        verdicts = [r for r in rules if "verdicts" in r]
+        self.assertEqual(verdicts, ["Bash(python3 /opt/plugin/scripts/retro-check verdicts --project /w/alpha "
+                                    "--metrics /h/.software-factory/retros/2026-11-14/alpha/alpha.json)"])
+        self.assertNotIn("*", verdicts[0])
+
     def test_no_read_rule_covers_the_home_folder_or_a_secret_folder_and_nothing_is_unscoped(self):  # #197
-        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha")
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha", "alpha")
         for bare in ("Read", "Grep", "Glob"):
             self.assertNotIn(bare, rules)
         reads = {r for r in rules if r.startswith("Read(")}
@@ -115,7 +124,7 @@ class RetroDailyTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_allowed_tools_have_no_wildcard_check_no_network_scan_or_launcher_file_write(self):  # #172, #154, #192
-        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha")
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha", "alpha")
         self.assertNotIn("Bash(python3 /opt/plugin/scripts/retro-check *)", rules)
         self.assertFalse([r for r in rules if r.startswith("Bash(") and "retro-check" not in r])
         for banned in ("WebFetch", "WebSearch", "mcp__", "git", "gh ", "curl", "retro-scan", "Write("):
@@ -150,7 +159,7 @@ class RetroDailyTests(unittest.TestCase):
         self.assertEqual(cmd, ["claude", "-p", prompt, "--plugin-dir", "/opt/plugin", "--agent", "software-factory:retro",
                                "--permission-mode", "dontAsk", "--setting-sources", "project", "--strict-mcp-config",
                                "--disallowedTools", *self.daily.disallowed_tools(Path.home(), "/w/alpha"),
-                               "--allowedTools", *self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir, "/w/alpha")])
+                               "--allowedTools", *self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir, "/w/alpha", "alpha")])
         self.assertTrue(all("," not in rule for rule in cmd[cmd.index("--disallowedTools") + 1:]))
         self.assertEqual(kw["cwd"], str(run_dir))
         self.assertIn(f"Scan file (already made, read it): {run_dir}/alpha.json", prompt)
@@ -283,6 +292,43 @@ class RetroDailyTests(unittest.TestCase):
                 mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(self.daily.main(), 0)
         self.assertRegex((self.state / "retro.log").read_text(), r"due=unknown \(scan-failed 2\) PATH=unset ")
+
+
+class SharedStateDirTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="retro-state-")
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(os.path.realpath(tmp.name))
+        (self.base / "sibling" / ".git").mkdir(parents=True)
+        env = mock.patch.dict(os.environ, {"HOME": str(self.base / "home"),
+                                           "SOFTWARE_FACTORY_HOME": str(self.base / "sibling" / "state")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_launcher_and_schedule_refuse_a_state_folder_inside_a_git_work_tree(self):  # #204
+        for name in ("retro-daily", "retro-schedule"):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(load(name).state_dir(), self.base / "home" / ".software-factory", name)
+
+    def test_launcher_copied_away_from_hooks_uses_the_plugin_root_it_finds(self):
+        daily = load("retro-daily")
+        elsewhere = self.base / "state" / "bin" / "retro-daily"
+        elsewhere.parent.mkdir(parents=True)
+        elsewhere.write_text("")
+        with mock.patch.object(daily, "__file__", str(elsewhere), create=True), \
+                mock.patch.object(daily, "newest_plugin", return_value=ROOT) as found, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(daily.state_dir(), self.base / "home" / ".software-factory")
+        found.assert_called_once()
+
+    def test_launcher_without_any_plugin_falls_back_to_the_plain_state_folder(self):
+        daily = load("retro-daily")
+        elsewhere = self.base / "state" / "bin" / "retro-daily"
+        elsewhere.parent.mkdir(parents=True)
+        elsewhere.write_text("")
+        with mock.patch.object(daily, "__file__", str(elsewhere), create=True), \
+                mock.patch.object(daily, "newest_plugin", return_value=None):
+            self.assertEqual(daily.state_dir(), self.base / "sibling" / "state")
 
 
 class RetroScheduleTests(unittest.TestCase):

@@ -26,7 +26,8 @@ SCRUB_PATTERNS = (("home path", HOME_PATH), ("tilde path", TILDE_PATH), ("home v
                   ("token", TOKEN), ("jwt", JWT), ("google api key", GOOGLE_API_KEY), ("private key", PRIVATE_KEY),
                   ("key assignment", KEY_ASSIGNMENT), ("password pair", PASSWORD_PAIR))
 # A report holds no links or images: a viewer fetches an image URL, which would send data out (#201).
-LINK = re.compile(r"\]\(|^\s*\[[^\]]*\]:|<img\b|<a\s|\b(?:src|srcset|href)\s*=|://|\bdata:[\w.+-]+/[\w.+-]+[;,]", re.I)
+LINK = re.compile(r"\]\(|^[\s>]*(?:(?:[-*+]|\d+[.)])[\s>]+)*\[[^\]]*\]:|<img\b|<a\s|\b(?:src|srcset|poster|href)\s*=|://|"
+                  r"\bdata:[\w.+-]+/[\w.+-]+[;,]", re.I)  # the definition may sit in a quote or a list item
 LINK_PATTERNS = (("link", LINK),)
 COPY_WORDS = 8  # a report may not share this many words in a row with raw scan text
 

@@ -63,6 +63,50 @@ class DraftDiffTests(TempBase):
     def test_no_change_at_all_fails(self):
         self.assertEqual(self.diff(), (1, {"extra": ["no added lines"]}))
 
+    def git(self, *args):
+        subprocess.run([*GIT, "-C", str(self.repo), *args], check=True, capture_output=True)
+
+    def test_a_removed_front_matter_dashes_line_is_a_deletion_not_a_header(self):
+        (self.repo / "a.md").write_text("---\ntools: Read\n---\nRun the tests.\n")
+        self.git("commit", "-qam", "front matter")
+        (self.repo / "a.md").write_text("---\ntools: Read\nRun the tests.\n\nRun the unit tests first.\n")
+        code, out = self.diff()
+        self.assertEqual((code, out["extra"]), (1, ["----"]))
+
+    def test_a_pure_rename_fails(self):
+        self.git("mv", "a.md", "b.md")
+        code, out = self.diff()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(e.startswith("changed kind of file: R") for e in out["extra"]), out)
+
+    def test_a_copy_fails(self):
+        (self.repo / "b.md").write_text("# Tests\n\nRun the tests.\n")
+        self.git("add", "-N", "b.md")
+        code, out = self.diff()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(e.startswith("changed kind of file: A") for e in out["extra"]), out)
+
+    def test_a_mode_change_fails(self):
+        os.chmod(self.repo / "a.md", 0o755)
+        (self.repo / "a.md").write_text("# Tests\n\nRun the tests.\n\nRun the unit tests first.\n")
+        code, out = self.diff()
+        self.assertEqual(code, 1)
+        self.assertTrue(any(e.startswith("changed kind of file: M") for e in out["extra"]), out)
+
+    def test_a_binary_change_fails(self):
+        (self.repo / "a.md").write_bytes(b"\x00\x01\x02 a.md")
+        code, out = self.diff()
+        self.assertEqual(code, 1)
+        self.assertIn("binary: a.md", out["extra"])
+
+    def test_a_change_to_a_file_the_draft_does_not_name_fails(self):
+        (self.repo / "c.md").write_text("Run the tests.\n")
+        self.git("add", "c.md")
+        self.git("commit", "-qm", "c")
+        (self.repo / "c.md").write_text("Run the tests.\nRun the unit tests first.\n")
+        code, out = self.diff()
+        self.assertEqual((code, out["extra"]), (1, ["file not named in the draft: c.md"]))
+
     def test_a_missing_repo_exits_2(self):
         r = subprocess.run([sys.executable, str(CHECK), "draft-diff", str(self.draft), str(self.base / "nope")],
                            capture_output=True, text=True)

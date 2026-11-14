@@ -19,13 +19,16 @@ import subprocess
 import sys
 from xml.sax.saxutils import escape
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import overlay  # noqa: E402
+
 LABEL = "dev.software-factory.retro"
 MARKER = "# software-factory-retro"
 CHECK_SUFFIX = ".check"
 
 
 def state_dir():
-    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
+    return overlay.state_dir()
 
 
 def label_for(check):

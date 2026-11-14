@@ -1041,7 +1041,8 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual([(v["verdict"], v.get("action")) for v in out], [("reverted", "ask-retire")])
 
     def test_reference_style_links_and_srcset_are_refused_by_publish_and_strict_scrub(self):  # #204 item 1
-        forms = ("[r]: //evil.test/p", "  [r]: relative/path", "![x][r]\n\n[r]: x", "<img srcset=\"a 1x\">", "SRCSET = a")
+        forms = ("[r]: //evil.test/p", "  [r]: relative/path", "![x][r]\n\n[r]: x", "<img srcset=\"a 1x\">", "SRCSET = a",
+                 "> [r]: x", "- [r]: x", "* [r]: x", "1. [r]: x", "> - [r]: x", "<video poster=a.png>", "POSTER = a")
         for text in forms:
             self.assertIn("links or images", self.publish(self.report(f"# Retro\n\n{text}\n"), code=2)["error"], text)
             path = self.base / "s.md"
