@@ -42,6 +42,10 @@ GH_WRITE = re.compile(
     r"project\s+(item-add|item-edit|item-create|create|field-create|link)|release\s+create|label\s+create|"
     r"api\s+(-X|--method)\s*(POST|PATCH|PUT|DELETE)|repo\s+(create|edit|rename)|workflow\s+run|run\s+rerun)|"
     r"git\s+(-C\s+\S+\s+)?(-c\s+\S+\s+)?push)\b")
+QUOTED = re.compile(r'"[^"]*"|\'[^\']*\'')
+LIST_LIMIT = 50
+REMOTE_TIMEOUT = 20
+SKIPPED = set()  # transcript files that could not be read this run, reported so a bad file is visible
 ERR_CLASS = [
     ("hook-block", re.compile(r"hook|blocked by|PreToolUse", re.I)),
     ("user-rejected", re.compile(r"doesn't want to proceed|user rejected|rejected by user", re.I)),
@@ -68,7 +72,7 @@ def projects_dir():
 def stamp(value):
     try:
         t = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     if t.tzinfo is None:
         t = t.replace(tzinfo=datetime.timezone.utc)
@@ -79,23 +83,33 @@ def iso(t):
     return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat(timespec="seconds")
 
 
+def is_gh_write(cmd):
+    # shortcut: quoted text is dropped, so a write inside `bash -c "..."` is missed; parse the shell if that matters
+    return bool(GH_WRITE.search(QUOTED.sub('""', cmd)))
+
+
 def records(path):
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            try:
-                d = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(d, dict):
-                yield d
+    """JSON objects of a transcript. An unreadable file yields nothing and is remembered in SKIPPED."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    yield d
+    except OSError:
+        SKIPPED.add(str(path))
 
 
 def session_cwd(path):
     for i, d in enumerate(records(path)):
-        if d.get("cwd"):
-            return d["cwd"]
+        cwd = d.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            return cwd
         if i > 50:
-            return None
+            break
     return None
 
 
@@ -110,25 +124,38 @@ def project_root(cwd):
     # shortcut: a removed worktree outside .claude/worktrees or .worktrees is not mapped; add a pattern if one shows up
     git_file = Path(cwd) / ".git"
     if git_file.is_file():
-        m = re.match(r"gitdir:\s*(.+)/\.git/worktrees/", git_file.read_text(errors="ignore"))
+        try:
+            m = re.match(r"gitdir:\s*(.+)/\.git/worktrees/", git_file.read_text(errors="ignore"))
+        except OSError:
+            return None
         if m and (Path(m.group(1)) / "docs" / "factory" / "status.md").is_file():
             return m.group(1)
     return None
 
 
+def mtime(path):
+    try:
+        return path.stat().st_mtime
+    except OSError:  # removed between the glob and the stat
+        return None
+
+
 def main_sessions(newer_than):
-    """(path, cwd, project) for each main-session transcript of a factory project modified after newer_than."""
+    """(path, cwd, project, mtime) for each main-session transcript of a factory project modified after newer_than."""
     for path in sorted(projects_dir().glob("*/*.jsonl")):
-        if path.stat().st_mtime < newer_than:
+        modified = mtime(path)
+        if modified is None or modified < newer_than:
             continue
         cwd = session_cwd(path)
         root = project_root(cwd)
         if root:
-            yield path, cwd, root
+            yield path, cwd, root, modified
 
 
-def subagent_files(session):
-    return sorted((session.parent / session.stem / "subagents").glob("*.jsonl"))
+def subagent_files(session, newer_than):
+    """Subagent logs of a session modified after newer_than; older ones cannot hold window activity."""
+    found = sorted((session.parent / session.stem / "subagents").glob("*.jsonl"))
+    return [sub for sub in found if (mtime(sub) or 0) >= newer_than]
 
 
 def meta_of(sub):
@@ -138,14 +165,18 @@ def meta_of(sub):
         return {}
 
 
-def discover(newer_than=None):
-    if newer_than is None:
-        newer_than = time.time() - DISCOVER_DAYS * DAY
+def discover(sessions=None):
+    """Factory projects seen in the last DISCOVER_DAYS. Pass an already scanned session list to avoid a second scan."""
+    newer_than = time.time() - DISCOVER_DAYS * DAY
+    if sessions is None:
+        sessions = main_sessions(newer_than)
     found = {}
-    for path, cwd, root in main_sessions(newer_than):
+    for _path, cwd, root, modified in sessions:
+        if modified < newer_than:
+            continue
         p = found.setdefault(root, {"project": root, "sessions": 0, "worktrees": set(), "last_active": 0.0})
         p["sessions"] += 1
-        p["last_active"] = max(p["last_active"], path.stat().st_mtime)
+        p["last_active"] = max(p["last_active"], modified)
         if cwd != root and not cwd.startswith(root + os.sep):
             p["worktrees"].add(cwd)
         elif WORKTREE.search(cwd):
@@ -216,21 +247,27 @@ def scan_file(path, since, until, branch=None, globs=(), sub=False):
         r["active"] = True
         r["first"] = r["first"] or t
         r["last"] = t
-        content = (d.get("message") or {}).get("content")
+        message = d.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
         if d.get("type") == "user" and not sub:
-            texts = [content] if isinstance(content, str) else [
-                c.get("text", "") for c in content or [] if isinstance(c, dict) and c.get("type") == "text"]
-            r["messages"] += [x.strip() for x in texts if x and not x.lstrip().startswith("<") and len(x) < 600]
+            if isinstance(content, str):
+                texts = [content]
+            else:
+                texts = [c.get("text") for c in content or [] if isinstance(c, dict) and c.get("type") == "text"]
+            r["messages"] += [x.strip() for x in texts
+                              if isinstance(x, str) and x and not x.lstrip().startswith("<") and len(x) < 600]
         if not isinstance(content, list):
             continue
         for c in content:
             if not isinstance(c, dict):
                 continue
             if c.get("type") == "tool_use":
-                name, tool_input = c.get("name") or "?", c.get("input") or {}
+                name = c.get("name") if isinstance(c.get("name"), str) and c.get("name") else "?"
+                tool_input = c.get("input") if isinstance(c.get("input"), dict) else {}
                 r["tool_calls"] += 1
-                cmd = tool_input.get("command", "") if name == "Bash" else ""
-                calls[c.get("id")] = (name, cmd)
+                cmd = tool_input.get("command") if name == "Bash" else ""
+                cmd = cmd if isinstance(cmd, str) else ""
+                calls[str(c.get("id"))] = (name, cmd)
                 if name == "Bash":
                     off = bool(tool_input.get("dangerouslyDisableSandbox"))
                     if off:
@@ -238,12 +275,12 @@ def scan_file(path, since, until, branch=None, globs=(), sub=False):
                     rule = ask_match(cmd, globs)
                     if rule:
                         r["ask_hits"][rule] += 1
-                    if GH_WRITE.search(cmd):
+                    if is_gh_write(cmd):
                         r["gh_writes"]["sandbox-off" if off else ("ask-rule" if rule else "sandboxed")] += 1
                 elif name.startswith("mcp__github__") and re.search(r"write|add_|create|update|merge|push", name):
                     r["gh_writes"]["mcp"] += 1
             elif c.get("type") == "tool_result":
-                name, _ = calls.get(c.get("tool_use_id"), ("?", ""))
+                name, _ = calls.get(str(c.get("tool_use_id")), ("?", ""))
                 text = c.get("content")
                 text = text if isinstance(text, str) else json.dumps(text)
                 if c.get("is_error") or "doesn't want to proceed" in text:
@@ -292,9 +329,9 @@ def github(project, since):
     """Merged PRs with review comments and main CI run times since `since`, or {'error': reason}."""
     day = datetime.datetime.fromtimestamp(since, datetime.timezone.utc).date().isoformat()
     try:
-        prs = gh(project, "pr", "list", "--state", "merged", "--search", f"merged:>={day}", "--limit", "50",
+        prs = gh(project, "pr", "list", "--state", "merged", "--search", f"merged:>={day}", "--limit", str(LIST_LIMIT),
                  "--json", "number,reviews,comments")
-        runs = gh(project, "run", "list", "--branch", "main", "--limit", "50", "--json",
+        runs = gh(project, "run", "list", "--branch", "main", "--limit", str(LIST_LIMIT), "--json",
                   "createdAt,updatedAt,conclusion")
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as e:
         return {"error": str(e)[:200]}
@@ -310,7 +347,9 @@ def github(project, since):
         if run.get("conclusion") == "failure":
             failed += 1
     durations.sort()
-    return {"merged_prs": len(prs), "review_comments": len(bodies), "review_samples": bodies[:10],
+    return {"merged_prs": len(prs), "prs_truncated": len(prs) >= LIST_LIMIT,
+            "ci_runs_truncated": len(runs) >= LIST_LIMIT,
+            "review_comments": len(bodies), "review_samples": bodies[:10],
             "ci_runs": len(durations), "ci_failed": failed,
             "ci_median_min": round(statistics.median(durations), 1) if durations else None,
             "ci_p90_min": round(p90(durations), 1) if durations else None}
@@ -322,13 +361,13 @@ def measure(project, since, until=None, branch=None, with_github=True):
     total = {k: collections.Counter() for k in COUNTERS}
     sessions = tool_calls = sub_errors = 0
     messages, dispatches = [], collections.defaultdict(list)
-    for path, _cwd, root in main_sessions(since):
+    for path, _cwd, root, _modified in main_sessions(since):
         if root != project:
             continue
         main = scan_file(path, since, until, branch, globs)
         runs = [main] if main["active"] else []
         sessions += 1 if main["active"] else 0
-        for sub in subagent_files(path):
+        for sub in subagent_files(path, since):
             s = scan_file(sub, since, until, branch, globs, sub=True)
             if not s["active"]:
                 continue
@@ -355,7 +394,7 @@ def measure(project, since, until=None, branch=None, with_github=True):
     top = lambda c: dict(c.most_common(TOP))  # noqa: E731
     return {
         "project": project, "window": {"since": iso(since), "until": iso(until), "branch": branch},
-        "sessions": sessions, "tool_calls": tool_calls,
+        "sessions": sessions, "tool_calls": tool_calls, "skipped_files": len(SKIPPED),
         "errors_by_class": dict(total["errors"]), "errors_by_tool": top(total["errors_by_tool"]),
         "subagent_error_share": round(sub_errors / errors, 2) if errors else 0.0,
         "hook_blocks": top(total["hook_blocks"]), "sandbox_off": top(total["sandbox_off"]),
@@ -375,13 +414,18 @@ def last_retro(project):
 
 
 def remote_main(project):
+    """(sha, None) of origin main, or (None, reason) when it cannot be read. Never prompts for credentials."""
     try:
-        r = subprocess.run(["git", "-C", project, "ls-remote", "origin", "refs/heads/main"],
-                           capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+        r = subprocess.run(["git", "-C", project, "ls-remote", "origin", "refs/heads/main"], capture_output=True,
+                           text=True, timeout=REMOTE_TIMEOUT, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return None, f"ls-remote timed out after {REMOTE_TIMEOUT}s"
+    except OSError as e:
+        return None, str(e)[:200]
     words = r.stdout.split()
-    return words[0] if r.returncode == 0 and words else None
+    if r.returncode:
+        return None, (r.stderr.strip().splitlines() or ["ls-remote failed"])[-1][:200]
+    return (words[0], None) if words else (None, "origin has no main branch")
 
 
 def window_start(project, since_arg=None):
@@ -392,19 +436,32 @@ def window_start(project, since_arg=None):
     return start if start is not None else time.time() - DEFAULT_DAYS * DAY
 
 
+def scan_floor():
+    """Oldest time any project's window can start: discover's cutoff or the earliest recorded retro."""
+    floor = time.time() - DISCOVER_DAYS * DAY
+    for row in overlay.read_jsonl(overlay.history_file()):
+        floor = min(floor, stamp(row.get("until")) or floor)
+    return floor
+
+
 def due():
-    out = []
-    for p in discover():
+    """(projects due for a retro, projects skipped with a reason). Scans transcripts once for all projects."""
+    sessions = list(main_sessions(scan_floor()))
+    out, skipped = [], []
+    for p in discover(sessions):
         root = p["project"]
-        sha = remote_main(root)
+        sha, reason = remote_main(root)
+        if not sha:
+            skipped.append({"project": root, "reason": reason})
+            continue
         last = last_retro(root)
-        if not sha or (last and last.get("sha") == sha):
+        if last and last.get("sha") == sha:
             continue
         since = window_start(root)
-        n = sum(1 for _path, _cwd, r in main_sessions(since) if r == root)
+        n = sum(1 for _path, _cwd, r, modified in sessions if r == root and modified >= since)
         if n >= 2:
             out.append({"project": root, "sha": sha, "since": iso(since), "sessions": n})
-    return out
+    return out, skipped
 
 
 def main(argv=None):
@@ -421,13 +478,17 @@ def main(argv=None):
     if a.discover:
         result = discover()
     elif a.due:
-        result = due()
+        result, skipped = due()
+        for item in skipped:  # stderr keeps stdout a plain list for the daily launcher
+            print(f"retro-scan: skipped {item['project']}: {item['reason']}", file=sys.stderr)
     else:
         root = os.path.realpath(a.project)
         since = window_start(root, a.since)
         if since is None:
             ap.error(f"--since is not an ISO time: {a.since}")
         result = measure(root, since, branch=a.branch, with_github=not a.no_github)
+    if SKIPPED and not a.project:
+        print(f"retro-scan: skipped {len(SKIPPED)} unreadable transcript file(s)", file=sys.stderr)
     text = json.dumps(result, indent=1, ensure_ascii=False)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)

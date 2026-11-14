@@ -1,5 +1,8 @@
 """Tests for scripts/retro-scan on fixture transcripts."""
 
+import ast
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -8,7 +11,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
+DAY = 86400
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "retro-scan"
 NOW = time.time()
@@ -71,6 +76,7 @@ class Fixture:
     def run(self, *args, **extra):
         r = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=self.env(**extra))
         assert r.returncode == 0, r.stderr
+        self.stderr = r.stderr
         return json.loads(r.stdout)
 
 
@@ -177,6 +183,129 @@ class MeasureTests(unittest.TestCase):
         self.f.session(r, [user("go", NOW - 100, r)])
         m = self.f.run("--project", r, "--since", iso(NOW - 3600), PATH=f"{bin_dir}:{os.environ['PATH']}")
         self.assertIn("not logged in", m["github"]["error"])
+
+
+def load_module():
+    loader = importlib.machinery.SourceFileLoader("retro_scan_under_test", str(SCRIPT))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+class RobustnessTests(unittest.TestCase):
+    def setUp(self):
+        self.f = Fixture()
+        self.repo = str(self.f.repo)
+        self.scan = load_module()
+        patcher = mock.patch.dict(os.environ, self.f.env())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self.f.tmp.cleanup()
+
+    def measure(self):
+        return self.f.run("--project", self.repo, "--since", iso(NOW - 3600), "--no-github")
+
+    def test_script_parses_as_python_3_9(self):
+        ast.parse(SCRIPT.read_text(), feature_version=(3, 9))
+
+    def test_non_string_cwd_is_skipped_and_the_scan_goes_on(self):
+        r = self.repo
+        self.f.session(r, [{"type": "user", "timestamp": iso(NOW - 60), "cwd": 5}])
+        self.f.session(r, [user("fine", NOW - 30, r)])
+        found = self.f.run("--discover")
+        self.assertEqual([p["sessions"] for p in found], [1])
+
+    def test_unreadable_file_is_skipped_and_counted(self):
+        r = self.repo
+        self.f.session(r, [user("fine", NOW - 30, r)])
+        locked = self.f.session(r, [user("locked", NOW - 20, r)])
+        locked.chmod(0o000)
+        try:
+            self.assertEqual([p["sessions"] for p in self.f.run("--discover")], [1])
+            self.assertIn("1 unreadable", self.f.stderr)
+            self.assertEqual(self.scan.session_cwd(locked), None)
+            self.assertEqual(self.scan.SKIPPED, {str(locked)})
+        finally:
+            locked.chmod(0o644)
+
+    def test_file_removed_between_glob_and_stat_is_skipped(self):
+        ghost = self.f.projects / "-gone" / "ghost.jsonl"
+        with mock.patch.object(Path, "glob", return_value=[ghost]):
+            self.assertEqual(list(self.scan.main_sessions(0)), [])
+
+    def test_bad_json_line_and_truncated_last_line_are_ignored(self):
+        r = self.repo
+        path = self.f.session(r, [user("no, stop", NOW - 30, r)])
+        path.write_text("not json\n" + path.read_text() + '{"type": "us')
+        self.assertEqual(self.measure()["user_message_counts"], {"correction": 1})
+
+    def test_odd_field_types_do_not_crash_the_scan(self):
+        r, t = self.repo, NOW - 60
+        odd = [
+            {"type": "user", "timestamp": iso(t), "cwd": r, "message": "just a string"},
+            {"type": "user", "timestamp": iso(t), "cwd": r, "message": {"content": [{"type": "text", "text": 7}]}},
+            {"type": "assistant", "timestamp": iso(t), "cwd": r, "message": {"content": [
+                {"type": "tool_use", "id": ["x"], "name": 5, "input": "oops"},
+                {"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": 42}},
+                {"type": "tool_result", "tool_use_id": ["x"], "content": None, "is_error": True}]}},
+            {"type": "user", "timestamp": 12345, "cwd": r},
+        ]
+        self.f.session(r, odd)
+        m = self.measure()
+        self.assertEqual((m["sessions"], m["tool_calls"], m["errors_by_class"]), (1, 2, {"other": 1}))
+
+    def test_git_push_text_inside_a_commit_message_is_not_a_write(self):
+        r = self.repo
+        self.f.session(r, [bash("a", 'git commit -m "docs: say when to git push"', NOW - 50, r),
+                           bash("b", "git push origin feature/x", NOW - 40, r)])
+        self.assertEqual(self.measure()["gh_writes"], {"sandboxed": 1})
+
+    def test_subagent_log_older_than_the_window_is_not_parsed(self):
+        r, t = self.repo, NOW - 600
+        meta = {"agentType": "software-factory:software-developer", "model": "sonnet"}
+        path = self.f.session(r, [user("go", t, r)], subagents=[(meta, [bash("s", "ls", t, r), bash("s2", "ls", t + 60, r)])])
+        old = NOW - 10 * DAY
+        for sub in (path.parent / path.stem / "subagents").glob("agent-0.jsonl"):
+            os.utime(sub, (old, old))
+        self.assertEqual(self.measure()["dispatches"], {})
+
+    def test_due_scans_transcripts_once_for_all_projects(self):
+        other = self.f.base / "work" / "other"
+        (other / "docs" / "factory").mkdir(parents=True)
+        (other / "docs" / "factory" / "status.md").write_text("# Status\n")
+        for repo in (self.repo, str(other)):
+            self.f.session(repo, [user("a", NOW - 100, repo)])
+            self.f.session(repo, [user("b", NOW - 50, repo)])
+        with mock.patch.object(self.scan, "remote_main", return_value=("abc", None)), \
+                mock.patch.object(self.scan, "session_cwd", wraps=self.scan.session_cwd) as reads:
+            due, skipped = self.scan.due()
+        self.assertEqual((len(due), skipped, reads.call_count), (2, [], 4))
+
+    def test_remote_main_never_prompts_and_has_a_short_timeout(self):
+        completed = subprocess.CompletedProcess([], 0, stdout="abc\trefs/heads/main\n", stderr="")
+        with mock.patch.object(self.scan.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(self.scan.remote_main(self.repo), ("abc", None))
+        self.assertEqual(run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertLessEqual(run.call_args.kwargs["timeout"], 30)
+
+    def test_due_reports_a_project_whose_remote_cannot_be_read(self):
+        r = self.repo
+        self.f.session(r, [user("a", NOW - 100, r)])
+        self.f.session(r, [user("b", NOW - 50, r)])
+        self.assertEqual(self.f.run("--due"), [])
+        self.assertIn(f"skipped {r}", self.f.stderr)
+
+    def test_github_says_when_the_list_limit_truncates(self):
+        bin_dir = self.f.base / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "prs.json").write_text(json.dumps([{"number": n, "reviews": [], "comments": []} for n in range(50)]))
+        (bin_dir / "gh").write_text(f"#!/bin/sh\nif [ \"$1\" = pr ]; then cat {bin_dir}/prs.json; else echo '[]'; fi\n")
+        (bin_dir / "gh").chmod(0o755)
+        self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        m = self.f.run("--project", self.repo, "--since", iso(NOW - 3600), PATH=f"{bin_dir}:{os.environ['PATH']}")
+        self.assertEqual((m["github"]["prs_truncated"], m["github"]["ci_runs_truncated"]), (True, False))
 
 
 class DueTests(unittest.TestCase):
