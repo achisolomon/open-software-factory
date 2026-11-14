@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "plugin"
 sys.path.insert(0, str(ROOT / "hooks"))
 import overlay  # noqa: E402
 

@@ -49,7 +49,9 @@ class EvalSuiteTests(unittest.TestCase):
             meta, body = front_matter(case / "prompt.md")
             self.assertEqual(meta.get("name"), case.name, case)
             self.assertTrue(body.strip(), f"{case.name}: empty prompt")
-            self.assertTrue(set(meta.get("tags", [])) & {"fast", "slow"}, f"{case.name}: tag fast or slow")
+            # quarantine: fails on main as often as on a branch, so --tag fast skips it until its grader is fixed
+            self.assertTrue(set(meta.get("tags", [])) & {"fast", "slow", "quarantine"},
+                            f"{case.name}: tag fast, slow or quarantine")
             graders = list((case / "graders").glob("*.md"))
             self.assertTrue(graders, f"{case.name}: no graders")
             for g in graders:

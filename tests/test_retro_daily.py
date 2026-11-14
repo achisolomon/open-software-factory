@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "plugin"
 
 EXPECTED_DENIED = [
     "WebFetch", "WebSearch", "Agent", "mcp__*", "Read(//h/.ssh/**)", "Read(//h/.aws/**)", "Read(//h/.config/gcloud/**)",

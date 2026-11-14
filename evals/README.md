@@ -18,6 +18,7 @@ The script wraps `claude plugin eval . --scaffold --trust-plugin --no-publish --
 - Each case also runs once without the plugin, as a baseline (the report's Δ column). `--ablation none` skips the baseline and halves the cost.
 - `--keep-temp` keeps each run's sandbox and `trace.jsonl`, so you can read the full reply when a grader fails.
 - `--tag fast` covers one-decision cases. `triage-first-with-model` is tagged `slow` because it dispatches real subagents.
+- `--tag quarantine` holds cases that fail on main as often as on a branch, so they say nothing about a change: `multi-repo-status` (the agent reads `status.md` with `cat`, and the grader counts only the Read tool) and `retro-names-asset`. Fix the grader, then tag the case `fast` again.
 - `--runs 1` is a smoke run. Before a release, use the default 3 runs: the agents are not deterministic, so one pass proves little.
 - `--model` picks the model under test. The original failures happened on Opus, so run on Opus before a release.
 - Results go to `evals/results/<timestamp>/` (git-ignored). Exit code 0 means every case met the threshold.

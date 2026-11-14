@@ -2,6 +2,12 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
+## 0.10.0 (2026-11-14)
+
+- **The plugin moved to `plugin/`.** What you install is now only the agents, skills, hooks, the handoff contract, the review-route script and the Retro Engine scripts. Docs, evals, tests and images stay in the repository but are no longer shipped. Same install command, same plugin name; run the usual update once. The root `.claude-plugin/plugin.json` stays as a version pointer so older installs still see this update.
+- `scripts/behavior-check` runs the evals from a temporary copy of the plugin plus `evals/`, because the eval runner only reads cases inside the plugin folder.
+- The gate hook no longer reads `DATABASE_URL` from your session's environment. None of the database clients it checks reads that variable, and it holds a password. A command that sets it inline or passes `"$DATABASE_URL"` still gets asked.
+
 ## 0.9.0 (2026-11-14)
 
 - **The factory learns from its own sessions, in every project on your machine.** A new Retro agent runs once a day, only for factory projects whose main moved. A script counts errors, hook blocks, approval prompts, time and tool calls per task, your corrections, PR review comments and CI times, with no model tokens. One Sonnet run then names the top frictions and picks at most 2 changes per project, each with an owner and the metric that proves it worked. The next retro checks that metric. A change that did not help is listed for you to drop; nothing is dropped without your yes. A published report holds no links or images.

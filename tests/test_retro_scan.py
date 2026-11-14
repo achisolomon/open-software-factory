@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 DAY = 86400
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "plugin"
 SCRIPT = ROOT / "scripts" / "retro-scan"
 NOW = time.time()
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"]

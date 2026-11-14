@@ -6,7 +6,7 @@ import unittest
 
 from test_hooks import DEV, run
 
-HOOKS_JSON = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
+HOOKS_JSON = Path(__file__).resolve().parents[1] / "plugin" / "hooks" / "hooks.json"
 
 
 def decide(command, agent_id="a1"):

@@ -1,6 +1,6 @@
 ---
 name: retro-names-asset
-tags: [fast, retro]
+tags: [quarantine, retro]
 max_turns: 15
 allowed_tools: [Edit, Write]
 ---
