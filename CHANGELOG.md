@@ -2,6 +2,14 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
+## 0.9.0 (2026-11-14)
+
+- **The factory learns from its own sessions, in every project on your machine.** A new Retro agent runs once a day, only for factory projects whose main moved. A script counts errors, hook blocks, approval prompts, time and tool calls per task, your corrections, PR review comments and CI times, with no model tokens. One Sonnet run then names the top frictions and picks at most 2 changes per project, each with an owner and the metric that proves it worked. The next retro checks that metric. A change that did not help is listed for you to drop; nothing is dropped without your yes. A published report holds no links or images.
+- **Your lessons live in your own overlay, not in the plugin.** Fixes go to `~/.software-factory/overlay/` (set `SOFTWARE_FACTORY_HOME` to move it), which plugin updates never overwrite. An entry can add or tighten a rule, never loosen one; anything that touches security, or lowers a review through a setting, waits for your yes. After a plugin update, an entry the plugin now covers is retired and one whose rule changed is marked stale until you decide.
+- **Every fix waits for your yes.** Session setup asks once whether to run the retro daily. Run `/software-factory:retro` for a retro now (it also covers a branch that never reached main) and `/software-factory:retro review` to answer what waits.
+- **The daily run is headless and fenced.** It has its own permission set: no web, no MCP, reads only the run folder, overlay, upstream, the plugin and the project, writes only to its work folder and upstream. `retro-check publish` refuses a report that copies 8 or more words of raw messages.
+- **Lessons seen in 3 or more projects become a draft change to the plugin**, scrubbed of project names, paths and quotes by a script check. Nothing is pushed or opened without your yes. Raw messages stay in `~/.software-factory/`.
+
 ## 0.8.4 (2026-11-14)
 
 - **Repeat commands stop asking for approval every time.** A week of traces showed about 3,000 sandbox-off Bash calls, most of them build-and-test runs sent as inline chains (`eval "$(...)"; ...; for s in ...; do ...; done`) or as scripts in a scratch folder. Neither can match an allow rule, and a scratch path changes every session, so the user approved the same run again and again. Contract rule 9.15 now says: a command you run more than once becomes a script in the project's `scripts/` folder, committed with the task and run as one plain command by absolute path. The agent hands the Team Lead `allowlist: Bash(<absolute path> *)`; the Team Lead asks the user once and adds it to the project settings (`session-setup` step 2).

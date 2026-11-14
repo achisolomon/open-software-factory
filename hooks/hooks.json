@@ -33,6 +33,11 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/no_wait.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/retro_approve_guard.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -61,12 +66,22 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scratch.py\" start",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/retro_overlay.py\"",
+            "timeout": 10
           }
         ]
       },
       {
         "matcher": "compact",
         "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/retro_overlay.py\"",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/after_compact.py\"",
