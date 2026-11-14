@@ -6,6 +6,9 @@
                                                         it to draft. In auto-fix mode an accepted entry goes active
                                                         only when may_go_live() allows it; every other entry that
                                                         passes waits in pending. Corrupt lines come back as rejects.
+  retro-check check ENTRY.json                          one JSON line {verdict, reason} for one entry (id, kind, class,
+                                                        role, text, evidence, target). Exit 0 accept, 1 reject or ask,
+                                                        2 bad file. Read-only, so it also runs when RETRO_HEADLESS=1
   retro-check approve ID | drop ID | retire ID          after the user's answer. Refuse (exit 2) when RETRO_HEADLESS=1,
                                                         which the headless launcher sets. approve re-checks the entry
   retro-check verdicts --project P --metrics FILE       kept, reverted or unknown for the previous retro's changes;
@@ -152,6 +155,11 @@ def cmd_apply(path, mode_flag):
     overlay.write_jsonl(overlay.overlay_file("entries"), current)
     overlay.write_jsonl(overlay.overlay_file("pending"), waiting)
     return results, 0
+
+
+def cmd_check(path):
+    verdict, reason = overlay.verdict(load_json(path, dict), active(entries()))
+    return {"verdict": verdict, "reason": reason}, 0 if verdict == "accept" else 1
 
 
 def cmd_approve(entry_id):
@@ -385,6 +393,7 @@ def build_parser():
     p = sub.add_parser("apply")
     p.add_argument("candidates")
     p.add_argument("--mode", choices=("draft",))
+    sub.add_parser("check").add_argument("entry")
     for name in USER_ONLY:
         sub.add_parser(name).add_argument("id")
     p = sub.add_parser("verdicts")
@@ -407,6 +416,8 @@ def run(a):
         raise CheckError(f"{a.cmd} is for the user: refused while {HEADLESS_ENV}=1")
     if a.cmd == "apply":
         return cmd_apply(a.candidates, a.mode)
+    if a.cmd == "check":
+        return cmd_check(a.entry)
     if a.cmd == "approve":
         return cmd_approve(a.id)
     if a.cmd == "drop":
@@ -428,7 +439,7 @@ def main(argv=None):
         out, code = run(a)
     except (CheckError, OSError, ValueError) as err:  # a clear message and exit 2, never a traceback
         out, code = {"error": str(err)}, 2
-    print(json.dumps(out, indent=1, ensure_ascii=False))
+    print(json.dumps(out, indent=None if a.cmd == "check" else 1, ensure_ascii=False))
     return code
 
 

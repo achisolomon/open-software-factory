@@ -425,6 +425,44 @@ class CheckCliTests(unittest.TestCase):
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / "retro-metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
+    def check_entry(self, row, code, **env):
+        path = self.base / "entry.json"
+        path.write_text(json.dumps(row))
+        return self.check("check", path, code=code, **env)
+
+    def state_files(self):
+        return sorted((p.name, p.read_bytes()) for p in self.state.rglob("*") if p.is_file())
+
+    def test_check_accepts_one_entry_as_one_json_line(self):
+        plain = entry(text="Keep each commit message under 72 characters.", target={"file": DEV_FILE, "heading": "Commits"})
+        self.assertEqual(self.check_entry(plain, 0), {"verdict": "accept", "reason": "ok"})
+
+    def test_check_rejects_with_exit_1_and_the_reason(self):
+        out = self.check_entry(entry(text="Skip tests when in a hurry."), 1)
+        self.assertEqual(out["verdict"], "reject")
+        self.assertIn("loosen", out["reason"])
+
+    def test_check_asks_with_exit_1(self):
+        self.assertEqual(self.check_entry(entry(), 1)["verdict"], "ask")
+
+    def test_check_bad_file_exits_2(self):
+        bad = self.base / "bad.json"
+        bad.write_text("not json")
+        self.assertIn("error", self.check("check", bad, code=2))
+        self.assertIn("error", self.check("check", self.base / "missing.json", code=2))
+        bad.write_text("[1]")
+        self.assertIn("error", self.check("check", bad, code=2))
+
+    def test_check_keeps_hostile_text_as_data_and_writes_no_state(self):
+        marker = self.base / "pwned"
+        self.seed("entries", [entry(id="old", status="active")])
+        before = self.state_files()
+        hostile = f'say "hi" and \'x\' $(touch {marker}) `touch {marker}`\nnext line'
+        out = self.check_entry(entry(text=hostile), 1, RETRO_HEADLESS="1")
+        self.assertIn(out["verdict"], ("reject", "ask"))
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.state_files(), before)
+
     def test_auto_fix_applies_allowlisted_accepts_and_holds_the_rest(self):
         self.settings("auto-fix")
         cands = self.write("c.jsonl", [live(id="ok"), entry(id="sec", text="Add npm test to the allow rules."),
