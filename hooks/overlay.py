@@ -35,7 +35,17 @@ LOOSEN = re.compile(r"\b(skip\w*|no longer|not needed|not required|no need|(?:do
 # Any mention sends an entry to the user. A plain substring match on purpose: "reviewers" and "approved" count.
 PROTECTED = re.compile(r"review|gate|approv|test|security|merge|push|\bqa\b|sign-?off|verdict|SR-|9\.13|sandbox|"
                        r"permission|hook|allow|auth|secret|token|credential", re.I)
-NEGATION_BEFORE = re.compile(r"(?:\b(?:not|never|no|without|stop)|n't)\s+$")
+# Contract rules 9.7 and 9.12 and the Definition of Done: irreversible actions and "finished" wording. Checked on the
+# entry text only (not the target path). Word starts only, so "task" and "maintain" stay plain.
+PROTECTED_ACTIONS = re.compile(
+    r"\b(?:deploy|ship|release|publish|delet|remov|rm\b|main\b|master\b|trunk\b|done\b|finish|complet|green\b|ready\b|"
+    r"ask\b|asking|confirm|spend|apply|appl(?:y|ies)\b|install|fetch|curl|wget|download|run\b|running|exec|force|"
+    r"recursive|report|repl(?:y|ies)|respon[ds]|answer|approv|prod\b|production|overwrit|drop|wipe|reset|"
+    r"destroy|discard|checkout|rebase|tag\b)", re.I)
+# Short names an entry may use for a role. The stems from agent_names() are added at check time.
+ROLE_WORDS = ("architect", "ux", "designer", "finops", "devops", "qa", "pm", "lead", "developer", "engineer",
+              "manager", "performance", "triage")
+NEGATION_BEFORE =re.compile(r"(?:\b(?:not|never|no|without|stop)|n't)\s+$")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCES = ("```", "~~~")
 
@@ -175,6 +185,13 @@ def agent_names(root=None):
     return {ALL_ROLES} | {p.stem for p in ((root or PLUGIN_ROOT) / "agents").glob("*.md")}
 
 
+def names_a_role(text, root=None):
+    """True when the text names a plugin role (full name, spaced or hyphenated, or a short name like 'architect')."""
+    words = {w for w in agent_names(root) if w != ALL_ROLES} | set(ROLE_WORDS)
+    pattern = "|".join(re.escape(w).replace(r"\-", "[- ]") for w in sorted(words))
+    return re.search(rf"\b(?:{pattern})", text, re.I) is not None
+
+
 def shape_problem(entry, roles):
     """Why id, role or text is not safe to print into a session, or None. Used by verdict and render."""
     for field in ("id", "role", "text"):
@@ -232,6 +249,8 @@ def verdict(entry, active, root=None):
         return "ask", "non-ASCII text"
     if PROTECTED.search(squash(where)) or entry["role"] == SECURITY_ROLE:
         return "ask", "touches a protected area"
+    if PROTECTED_ACTIONS.search(seen) or names_a_role(seen, root):
+        return "ask", "names an irreversible action, a finish line or a role"
     return "accept", "ok"
 
 
