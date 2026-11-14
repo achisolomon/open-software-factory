@@ -2,11 +2,57 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
-## 0.9.0 (2026-11-03)
+## 0.10.0 (2026-11-14)
 
-- **The plugin moved to `plugin/`.** What you install is now only the agents, skills, hooks, the handoff contract and the review-route script. Docs, evals, tests and images stay in the repository but are no longer shipped. Same install command, same plugin name; run the usual update once. The root `.claude-plugin/plugin.json` stays as a version pointer so older installs still see this update.
+- **The plugin moved to `plugin/`.** What you install is now only the agents, skills, hooks, the handoff contract, the review-route script and the Retro Engine scripts. Docs, evals, tests and images stay in the repository but are no longer shipped. Same install command, same plugin name; run the usual update once. The root `.claude-plugin/plugin.json` stays as a version pointer so older installs still see this update.
 - `scripts/behavior-check` runs the evals from a temporary copy of the plugin plus `evals/`, because the eval runner only reads cases inside the plugin folder.
 - The gate hook no longer reads `DATABASE_URL` from your session's environment. None of the database clients it checks reads that variable, and it holds a password. A command that sets it inline or passes `"$DATABASE_URL"` still gets asked.
+
+## 0.9.0 (2026-11-14)
+
+- **The factory learns from its own sessions, in every project on your machine.** A new Retro agent runs once a day, only for factory projects whose main moved. A script counts errors, hook blocks, approval prompts, time and tool calls per task, your corrections, PR review comments and CI times, with no model tokens. One Sonnet run then names the top frictions and picks at most 2 changes per project, each with an owner and the metric that proves it worked. The next retro checks that metric. A change that did not help is listed for you to drop; nothing is dropped without your yes. A published report holds no links or images.
+- **Your lessons live in your own overlay, not in the plugin.** Fixes go to `~/.software-factory/overlay/` (set `SOFTWARE_FACTORY_HOME` to move it), which plugin updates never overwrite. An entry can add or tighten a rule, never loosen one; anything that touches security, or lowers a review through a setting, waits for your yes. After a plugin update, an entry the plugin now covers is retired and one whose rule changed is marked stale until you decide.
+- **Every fix waits for your yes.** Session setup asks once whether to run the retro daily. Run `/software-factory:retro` for a retro now (it also covers a branch that never reached main) and `/software-factory:retro review` to answer what waits.
+- **The daily run is headless and fenced.** It has its own permission set: no web, no MCP, reads only the run folder, overlay, upstream, the plugin and the project, writes only to its work folder and upstream. `retro-check publish` refuses a report that copies 8 or more words of raw messages.
+- **Lessons seen in 3 or more projects become a draft change to the plugin**, scrubbed of project names, paths and quotes by a script check. Nothing is pushed or opened without your yes. Raw messages stay in `~/.software-factory/`.
+
+## 0.8.4 (2026-11-14)
+
+- **Repeat commands stop asking for approval every time.** A week of traces showed about 3,000 sandbox-off Bash calls, most of them build-and-test runs sent as inline chains (`eval "$(...)"; ...; for s in ...; do ...; done`) or as scripts in a scratch folder. Neither can match an allow rule, and a scratch path changes every session, so the user approved the same run again and again. Contract rule 9.15 now says: a command you run more than once becomes a script in the project's `scripts/` folder, committed with the task and run as one plain command by absolute path. The agent hands the Team Lead `allowlist: Bash(<absolute path> *)`; the Team Lead asks the user once and adds it to the project settings (`session-setup` step 2).
+- **Subagents may write to Claude Code's own session scratchpad.** The project-bounds hook blocked `/private/tmp/claude-<uid>/<project>/<session>/scratchpad`, which Claude Code itself tells subagents to use (96+ wasted turns in a week). Loose files elsewhere in the temp folder are still blocked.
+- **Shell form, in three lines.** Rule 9.15 now spells out one command per call, literal absolute paths in directory flags (never `git -C "$W"`), and scripts for tools without a directory flag. These blocks cost about 700 turns in a week.
+- **Sandbox off only after a sandbox error.** Agents run every command in the sandbox first and never turn it off up front, never for `gh` or `git push`.
+- **No more calls to tools that are not there.** Agents check their tool list and search with `grep`/`rg` through Bash when Grep or Glob is missing; no subagent role has Monitor.
+- **Background processes are stopped by ID.** Agents record the shell ID or PID of every server or emulator they start and stop it with TaskStop or `kill <pid>`, never `pkill -f`, which the auto-mode classifier denies.
+- **Smaller tasks.** Developer tasks averaged about 225 tool calls against a target of 80. The Architect now splits any task over about 5 production files, 2 acceptance criteria, or one that spans UI and backend; the Team Lead sends the rest of a story back for splitting when a Developer dispatch passes about 120 calls.
+- **Flaky tests are quarantined at once.** A test that passes on an unchanged rerun is quarantined with an issue in the same turn, with no debugging rounds, and the user is told which test and what it failed on.
+- **Mock parity.** In Review mode the UX Designer screenshots the local build and compares it with the mock the user approved; a visible difference is at least Major.
+- **Pushing a task branch no longer asks.** The gate hook flags a push only when it goes to a shared branch (`main`, `master`, `dev`, `develop`, `staging`, `prod`, `production`, `gh-pages`, `release/*`), or when it is a bare or `HEAD` push, a plain force push, a delete, or a push of tags, `--all` or `--mirror`. `git push -u origin feature/x` and `--force-with-lease` to a task branch pass. Merges stay gated. The hook still never answers "allow", so your own permission settings decide whether you are prompted.
+- **Repeat bugs get a regression test.** When the user says a bug came back, the Developer finds why the earlier fix did not hold and adds a test that fails without the fix.
+
+## 0.8.3 (2026-11-11)
+
+- **New repo name: `achisolomon/open-software-factory`.** The install line, links, homepage and the version check now use the new name. GitHub redirects the old URL, so existing installs keep working. The plugin and marketplace names (`software-factory@software-factory-marketplace`) are unchanged.
+
+## 0.8.2 (2026-11-08)
+
+- **Fewer wasted turns in subagents.** Contract rule 9.15 lists the tool failures that repeated most in real traces (missing Grep and Monitor tools, bad `--jq` quoting, missing labels) with the working form for each, and points to 9.12 for shell file writes and scratch.
+- **No chained commands.** Rule 9.15 now tells agents to run each command on its own (no `cd X && cmd` or `cd X; cmd`) and to use absolute paths and directory flags (`git -C`, `npm --prefix`, `terraform -chdir`, `gh -R`), because permission hooks can block chains. A tool with no directory flag gets absolute paths or a short script under `$FACTORY_TMP`.
+- **Cloud reads stay at project scope.** Rule 9.15 also tells agents that org- or billing-level reads (billing budgets, org IAM, org policies) are usually denied; a denied read is reported as a gap, not retried or routed around.
+- **Subagents end the run on the reply block.** With a handback tool (for example `SubagentHandback`) the whole block goes in that call; otherwise it is the final text message. A run that ended on any other tool call was recorded as a failed subagent.
+
+## 0.8.1 (2026-11-07)
+
+Faster runs, fewer tokens, and you choose who is on the team. Measured on two real runs of 41 and 48 hours: the Developer averaged 65 minutes and 249 tool calls per task, Security reviewed almost every task, four foreground CI watches held Developers for 9 hours, and the Team Lead's context sat at a median of 187K tokens per turn.
+
+- **Choose who is on the team.** A new `- Team:` line in `project-facts.md` sets Security, UX, FinOps and DevOps each to `per-task`, `per-epic` or `off`. Init asks once; say "skip UX for this epic" any time. With no line, Security runs per epic and the rest per task.
+- **Security per epic by default, per task only on hard triggers.** `review-route` now splits security triggers in two. Hard (auth code, security rules files, secrets, new or changed dependencies, payments, migrations, agent instruction files, a deleted guard, a deep route) always run Security on the task, whatever the roster says. Soft (the words auth, token or session in new code, HTTP calls, models and storage folders) follow the roster, by default one Security review of the whole epic's diff at epic end. Tests, docs and generated code-graph output (`graphify-out/`) no longer trigger Security or UX. Reviewers the route marks `epic-end` are queued in `status.md` and run once when the epic's last task is done.
+- **No more waiting in the foreground.** A new hook, `hooks/no_wait.py`, refuses `gh pr checks --watch`, `gh run watch`, polling loops with `sleep` and sleeps over 30 seconds in factory subagents. The agent returns `in-progress` with the CI run in `Job:` instead. The Team Lead watches CI with one background command rather than polling.
+- **Smaller tasks, fewer fix rounds.** The Architect sizes tasks at about 80 Developer tool calls and splits bigger ones. A Developer past about 120 calls stops and proposes a split. Before handing back, it checks its diff against the new `reference/review-checklist.md` and the brain's recurring findings. A fix round must change what the reviewer objected to.
+- **A lighter Team Lead.** Init, Discovery, Architecture, design reviews, Release readiness, Deploy, the infrastructure gate, the templates and lesson promotion moved to `reference/team-lead-phases.md`, read only at that step: `agents/team-lead.md` went from 54 KB to 42 KB, though this release also adds rules to it. The Team Lead batches its `status.md` edits per wave, sends long command output to a file, and leaves issue work to the Project Manager.
+- **Cheaper reading.** Every agent reads code with Read, Grep and Glob instead of `cat`, `sed -n` and `grep` in Bash. When a project has a code graph (`graphify-out/graph.json`), agents ask it first and read only the lines it points to.
+- **Per-agent effort.** The Developer, Test Automation Engineer, UX/UI Designer and FinOps Engineer run at `effort: medium`. The Architect, Security and the Team Lead keep their default effort.
+- **Upgrade note.** Projects without a `- Team:` line now get Security per epic instead of on most tasks. Add `- Team: security=per-task` under Preferences in `project-facts.md` to keep the old behavior.
 
 ## 0.8.0 (2026-11-03)
 

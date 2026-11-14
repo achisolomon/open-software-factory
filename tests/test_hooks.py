@@ -76,6 +76,31 @@ class GateTests(unittest.TestCase):
                 out = self.gate(command, **kwargs)
                 self.assertEqual(out and out["permissionDecision"], expected, f"{command!r} -> {out}")
 
+    def test_task_branch_push_is_not_flagged(self):
+        self.assert_decision([
+            "git push -u origin feature/coupon-link",
+            "git -C /some/repo push origin fix/T-027",
+            "git push --force-with-lease origin feature/x",
+            "git push origin HEAD:feature/x",
+            "git push -uq origin a/b c/d",
+            "git -c core.hooksPath=.githooks push -u origin feature/x",
+        ], None)
+
+    def test_push_to_shared_or_unclear_target_asks(self):
+        self.assert_decision([
+            "git push origin dev", "git push origin main", "git push origin Master", "git push origin release/1.2",
+            "git push origin gh-pages", "git push origin feature/x:main", "git push origin HEAD",
+            "git push origin", "git push --force origin feature/x", "git push origin +feature/x",
+            "git push -f origin feature/x", "git push origin :feature/x", "git push --delete origin feature/x",
+            "git push --tags origin feature/x", "git push --all origin", "git push origin $BRANCH",
+            "git push origin refs/tags/v1",
+            # git expands these shorthand destinations to full refs
+            "git push origin x:heads/main", "git push origin x:tags/v1", "git push origin x:remotes/origin/main",
+            "git push origin trunk", "git push origin release-1.0", "git push origin hotfix/urgent",
+            # config can change what a push runs or where it goes
+            "git -c core.sshCommand=evil push origin feature/x", "git --git-dir=/x/.git push origin feature/x",
+        ], "ask")
+
     def test_asks_for_external_actions(self):
         self.assert_decision([
             "git push",
@@ -795,11 +820,15 @@ class HooksJsonTests(unittest.TestCase):
         expected = {
             ("PreToolUse", "Agent|Task", "require_agent_model.py"),
             ("PreToolUse", "Bash", "gate.py"),
+            ("PreToolUse", "Bash", "no_wait.py"),
+            ("PreToolUse", "Bash", "retro_approve_guard.py"),
             ("PreToolUse", "Write|Edit|NotebookEdit", "project_bounds.py"),
             ("SubagentStop", None, "check_reply.py"),
             ("SessionStart", "compact", "after_compact.py"),
+            ("SessionStart", "compact", "retro_overlay.py"),
             ("SessionStart", "startup|resume|clear", "version_check.py"),
             ("SessionStart", "startup|resume|clear", "scratch.py start"),
+            ("SessionStart", "startup|resume|clear", "retro_overlay.py"),
             ("SessionEnd", None, "scratch.py end"),
             ("UserPromptSubmit", None, "team_lead_trigger.py"),
         }

@@ -23,6 +23,7 @@ AGENT_DISPLAY_NAMES = {
     "security-engineer": "Security Engineer",
     "ux-ui-designer": "UX/UI Designer",
     "performance-engineer": "Performance Engineer",
+    "retro": "Retro",
 }
 
 
@@ -54,6 +55,40 @@ class ReleaseFilesTests(unittest.TestCase):
             for path in (ROOT / "tests").glob("*.py")
         )
         self.assertIn(f"{count} offline tests", read("README.md"))
+
+    def test_readme_has_a_retro_row_that_does_not_overclaim_privacy(self):
+        row = next(line for line in read("README.md").splitlines() if line.startswith("| **Retro**"))
+        self.assertIn("your messages are never quoted", row)
+        self.assertNotIn("never leave it", row)
+
+    def test_retro_skill_and_wiring(self):
+        skill = read("plugin/skills/retro/SKILL.md")
+        self.assertIn("name: retro\n", skill)
+        review = skill.split("## `review`", 1)[1].split("## Run a retro now", 1)[0]
+        self.assertLess(review.index("`<CHECK> check <entry file>`"), review.index("create branch"))
+        self.assertNotIn("python3 -c", skill)
+        self.assertIn("json.dumps", review)
+        self.assertIn("`withdrawn`", review)
+        self.assertIn("`<CHECK> scrub <changed files> --strict`", review)
+        self.assertIn("--due-out <STATE>/retros/<today>/<slug>-now/`", skill)
+        self.assertIn("must sit inside `<STATE>/retros/`", skill)
+        self.assertIn("never a worktree path", skill)
+        self.assertIn("reach only `<STATE>/retros/<today>/<slug>-now/work/` and `<STATE>/upstream/`", skill)
+        self.assertIn("Run folder `<STATE>/retros/<today>/<slug>-now/`", skill)
+        self.assertIn("retro-scan --project <project> [--branch <branch>] [--since <since>] --out", skill)  # #203
+        self.assertIn("Add `--branch <branch>` only when the user named a branch", skill)
+        self.assertIn("`--since <since>` only when the user gave a start date", skill)
+        self.assertIn("`$SOFTWARE_FACTORY_HOME`", read("plugin/skills/session-setup/SKILL.md"))
+        lead = read("plugin/agents/team-lead.md")
+        self.assertIn("whose file name the brain does not yet name", lead)
+        self.assertIn("Apply \"The factory brain\" rules", lead)
+        setup = read("plugin/skills/session-setup/SKILL.md")
+        self.assertNotIn("always ask", setup)
+        self.assertIn("Do not offer auto-fix", setup)
+        self.assertNotIn("`auto-fix`", setup)
+        self.assertNotIn("auto-fix", read("CHANGELOG.md").split("## ", 2)[1])
+        self.assertNotIn("auto-fix", read("README.md"))
+        self.assertIn("- **Overlay**: the overlay lines for this role", read("plugin/agents/team-lead.md"))
 
     def test_readme_team_table_lists_every_agent(self):
         # An agent added without a display name here fails the test on purpose.

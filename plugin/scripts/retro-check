@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""Retro Engine checks, and the only writer of the overlay and the retro history. Prints JSON.
+
+  retro-check apply CANDIDATES [--mode draft]           check each candidate entry (JSONL). Mode comes from
+                                                        retro-settings.json (default draft); the flag can only lower
+                                                        it to draft. Setup writes draft, so every entry that passes
+                                                        waits in pending. The auto-fix path (may_go_live(), empty
+                                                        LIVE_HEADINGS) is kept for a later release and applies
+                                                        nothing. Corrupt lines come back as rejects.
+  retro-check check ENTRY.json                          one JSON line {id, verdict, reason} for one entry (id, kind, class,
+                                                        role, text, evidence, target). Exit 0 accept, 1 reject or ask,
+                                                        2 bad file. Read-only, so it also runs when RETRO_HEADLESS=1
+  retro-check approve ID | drop ID | retire ID | keep ID  after the user's answer. Refuse (exit 2) when RETRO_HEADLESS=1,
+                                                        which the headless launcher sets. approve re-checks the entry.
+                                                        keep is for a stale entry: it re-checks it against the current
+                                                        heading and makes it active again, or, when it no longer fits,
+                                                        moves it to pending (retire is the drop for a stale entry)
+  retro-check verdicts --project P --metrics FILE       kept, reverted or unknown for the previous retro's changes,
+                                                        recomputed here from the scan metrics and each change's own
+                                                        metric. FILE must be the scan in the run folder whose due.json
+                                                        lists P. Retires reverted entries that went live on their own
+                                                        (auto); a reverted approved entry gets action ask-retire
+  retro-check lessons                                   projects, changes and kept counts per lesson key
+  retro-check repair                                    rewrite entries.jsonl and pending.jsonl from their valid
+                                                        rows; a file with bad lines is copied to *.corrupt-<time>
+                                                        first. Refused (exit 2) when RETRO_HEADLESS=1
+Every command except check, lessons and scrub holds an exclusive lock on <state>/overlay/.lock.
+  retro-check scrub FILE... [--strict]                  exit 1 if a file holds a secret, a home path or an email;
+                                                        --strict also flags links, reference-style link definitions,
+                                                        srcset, discovered project names and private-words.txt.
+                                                        Exit 2 on a missing or unreadable file
+  retro-check draft-diff DRAFT REPO                     exit 1 when the uncommitted change in REPO (git diff HEAD) holds
+                                                        anything but added lines that the draft shows: a deletion, an
+                                                        untracked file, an added line not in the draft, no added line
+  retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
+                                                        scrub the report (strict, minus P's own name), write it to
+                                                        <P>/docs/factory/retros/ and append the history row. REPORT
+                                                        must sit in <state>/retros/<day>/<slug>/work/. The project
+                                                        folder above it holds the launcher's due.json (P only) and
+                                                        the scan file that --metrics must be. The previous verdicts
+                                                        stored are the recomputed ones: a --verdicts file is only
+                                                        checked for shape. Refused (exit 2) when a change
+                                                        lesson is not [a-z0-9-]{1,40}, or when the report shares 8+
+                                                        words in a row with a raw user message or PR comment sample in
+                                                        a scan *.json in that folder
+Exit codes: 0 done or clean, 1 a check said no (hits, refused entry), 2 bad input or not allowed.
+Stdlib only, Python 3.9+.
+"""
+
+import argparse
+from contextlib import nullcontext
+from datetime import datetime, timezone
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import overlay  # noqa: E402
+from retro_publish import (CheckError, checked_metrics, checked_project, checked_retros_dir,  # noqa: E402,F401
+                           checked_source, load_json, raw_scan_texts, read_text_file, require_scan_of, retro_date)
+from retro_scrub import COPY_WORDS, LINK_PATTERNS, copied_lines, scrub_patterns, scrub_text  # noqa: E402
+
+PUBLIC_NAMES = {"software-factory", "open-software-factory"}
+
+# The (agent file, heading) pairs an accepted entry may go live on without the user's yes (auto-fix mode), and only
+# for that file's own agent. Headings are compared after overlay.norm(). The list is empty by the user's choice on
+# #174: every entry waits for the user's yes. A pair may be added only with a test that its section holds no gate
+# wording. The spec records this list in Task 11 (#168).
+LIVE_HEADINGS = frozenset()
+REVIEWER_ROLES = frozenset({"security-engineer", "test-automation-engineer", "software-architect", "finops-engineer",
+                            "devops-engineer", "exploratory-qa-engineer", "performance-engineer", "ux-ui-designer"})
+REVIEW_HEADING = re.compile(r"^#{1,6}\s.*review", re.I | re.M)
+SHA = re.compile(r"[0-9a-f]{7,40}")
+USER_ONLY = ("approve", "drop", "retire", "keep")
+READ_ONLY = ("check", "lessons", "scrub", "draft-diff")  # every other command takes the overlay lock (shared with the SessionStart refresh)
+HEADLESS_ENV = "RETRO_HEADLESS"
+LESSON_KEY = re.compile(r"[a-z0-9-]{1,40}")
+STATE_FIELDS = ("status", "reason", "went_live_at", "went_live_by")  # set by retro-check only, never by a candidate
+
+
+def entries():
+    return overlay.read_jsonl(overlay.overlay_file("entries"))
+
+
+def pending():
+    return overlay.read_jsonl(overlay.overlay_file("pending"))
+
+
+def active(rows):
+    return [e for e in rows if e.get("status") == "active"]
+
+
+def effective_mode(flag):
+    """auto-fix only when retro-settings.json says so. The flag can lower the mode to draft, never raise it (#172)."""
+    return "auto-fix" if overlay.settings().get("mode") == "auto-fix" and flag != "draft" else "draft"
+
+
+def has_review_heading(file, root):
+    try:
+        return REVIEW_HEADING.search((root / file).read_text(encoding="utf-8")) is not None
+    except OSError:
+        return True  # a file that cannot be read is not one to trust
+
+
+def may_go_live(cand, root=None):
+    target = cand.get("target")
+    if not isinstance(target, dict) or not isinstance(target.get("file"), str):
+        return False
+    if (target["file"], overlay.norm(target.get("heading", ""))) not in LIVE_HEADINGS:
+        return False
+    role = cand.get("role")
+    return (role == Path(target["file"]).stem and role not in REVIEWER_ROLES
+            and not has_review_heading(target["file"], (root or overlay.PLUGIN_ROOT)))
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def cmd_apply(path, mode_flag):
+    if not Path(path).is_file():
+        raise CheckError(f"no candidates file {path}")
+    rows, bad_lines = overlay.read_jsonl_counted(path)
+    mode = effective_mode(mode_flag)
+    current, waiting = entries(), pending()
+    ids = {e.get("id") for e in current + waiting}
+    results = []
+    for cand in rows:
+        cand = {k: v for k, v in cand.items() if k not in STATE_FIELDS}  # only this script sets the entry's state
+        verdict, reason = overlay.verdict(cand, active(current))
+        if verdict != "reject" and cand["id"] in ids:
+            verdict, reason = "reject", "id already in use"
+        placed = "none"
+        if verdict != "reject":
+            e = overlay.stamp(cand)
+            if verdict == "accept" and mode == "auto-fix" and may_go_live(cand):
+                e["status"], e["went_live_at"], e["went_live_by"], placed = "active", now(), "auto", "active"
+                current.append(e)
+            else:
+                e["status"], e["reason"], placed = "pending", reason, "pending"
+                waiting.append(e)
+            ids.add(cand["id"])
+        results.append({"id": cand.get("id"), "verdict": verdict, "reason": reason, "placed": placed})
+    results += [{"id": None, "verdict": "reject", "reason": "corrupt candidate line", "placed": "none"}] * bad_lines
+    # entries first: a crash between the two leaves a candidate to re-apply, never a lost entry
+    overlay.write_jsonl(overlay.overlay_file("entries"), current)
+    overlay.write_jsonl(overlay.overlay_file("pending"), waiting)
+    return results, 0
+
+
+def cmd_repair():
+    """Rewrite entries.jsonl and pending.jsonl from their valid rows. write_jsonl copies a file with bad lines to
+    <name>.corrupt-<timestamp> first, so nothing is lost."""
+    fixed = {}
+    for name in ("entries", "pending"):
+        path = overlay.overlay_file(name)
+        rows, bad = overlay.read_jsonl_counted(path)
+        if bad:
+            overlay.write_jsonl(path, rows)
+            fixed[f"{name}.jsonl"] = bad
+    return {"repaired": fixed}, 0
+
+
+def cmd_check(path):
+    entry = load_json(path, dict)
+    verdict, reason = overlay.verdict(entry, active(entries()))
+    return {"id": entry.get("id"), "verdict": verdict, "reason": reason}, 0 if verdict == "accept" else 1
+
+
+def cmd_approve(entry_id):
+    current, waiting = entries(), pending()
+    found = [e for e in waiting if e.get("id") == entry_id]
+    if not found:
+        return {"error": f"no pending entry {entry_id}"}, 1
+    verdict, reason = overlay.verdict(found[0], active(current))
+    if verdict == "reject":  # the user's yes covers an ask, never a reject
+        return {"error": reason}, 1
+    e = overlay.stamp(found[0])
+    e["status"], e["went_live_at"], e["went_live_by"] = "active", now(), "approved"  # shows in the next list too (#167)
+    e.pop("reason", None)
+    # entries first: a crash between the two leaves the id in both files, and a re-approve replaces it
+    overlay.write_jsonl(overlay.overlay_file("entries"), [x for x in current if x.get("id") != entry_id] + [e])
+    overlay.write_jsonl(overlay.overlay_file("pending"), [x for x in waiting if x.get("id") != entry_id])
+    return {"id": entry_id, "status": "active"}, 0
+
+
+def cmd_keep(entry_id):
+    """The user's yes to a stale entry. Re-check it against the plugin as it is now: it goes active again, pinned to the
+    current heading, or, when it no longer fits (heading gone, now a loosening), waits in pending as a fresh candidate."""
+    current = entries()
+    found = [e for e in current if e.get("id") == entry_id and e.get("status") == "stale"]
+    if not found:
+        return {"error": f"no stale entry {entry_id}"}, 1
+    fresh = overlay.stamp({k: v for k, v in found[0].items() if k not in STATE_FIELDS})
+    verdict, reason = overlay.verdict(fresh, active(current))
+    if verdict == "reject":
+        fresh["status"], fresh["reason"] = "pending", f"kept by the user, but it no longer fits: {reason}"
+        # pending first: a crash between the two leaves the id in both files, and a re-keep replaces it
+        overlay.write_jsonl(overlay.overlay_file("pending"), [x for x in pending() if x.get("id") != entry_id] + [fresh])
+        overlay.write_jsonl(overlay.overlay_file("entries"), [x for x in current if x is not found[0]])
+        return {"id": entry_id, "status": "pending", "reason": fresh["reason"]}, 0
+    fresh["status"], fresh["went_live_at"], fresh["went_live_by"] = "active", now(), "approved"
+    overlay.write_jsonl(overlay.overlay_file("entries"), [fresh if x is found[0] else x for x in current])
+    return {"id": entry_id, "status": "active"}, 0
+
+
+def cmd_drop(entry_id):
+    waiting = pending()
+    if not any(e.get("id") == entry_id for e in waiting):
+        return {"error": f"no pending entry {entry_id}"}, 1
+    overlay.write_jsonl(overlay.overlay_file("pending"), [e for e in waiting if e.get("id") != entry_id])
+    return {"id": entry_id, "status": "dropped"}, 0
+
+
+def retire(entry_id, reason):
+    rows, done = entries(), False
+    for e in rows:
+        if e.get("id") == entry_id and e.get("status") in ("active", "stale"):
+            e["status"], e["reason"], done = "retired", reason, True
+    if done:
+        overlay.write_jsonl(overlay.overlay_file("entries"), rows)
+    return done
+
+
+def cmd_retire(entry_id):
+    if not retire(entry_id, "retired by the user"):
+        return {"error": f"no active or stale entry {entry_id}"}, 1
+    return {"id": entry_id, "status": "retired"}, 0
+
+
+def metric_value(metrics, name):
+    """A metric per session: a headline key, or 'section.key' such as 'sandbox_off.rtk gh'. None if unknown."""
+    sessions = max(1, metrics.get("sessions") or 0)
+    headline = metrics.get("headline") or {}
+    if name in headline:
+        value = headline[name]
+    else:
+        section, _, key = str(name).partition(".")
+        table = metrics.get(section)
+        if not isinstance(table, dict) or key not in table:  # a typo must not read as zero
+            return None
+        value = table[key]
+    if not isinstance(value, (int, float)):
+        return None
+    return round(value / sessions, 3)
+
+
+def verdict_for(baseline, now_value):
+    if baseline is None or now_value is None:
+        return "unknown"
+    return "kept" if now_value < baseline or now_value == baseline == 0 else "reverted"  # lower is better for all
+
+
+def last_row(project):
+    """The project's newest history row, or None."""
+    rows = [r for r in overlay.read_jsonl(overlay.history_file()) if r.get("project") == project]
+    return rows[-1] if rows else None
+
+
+def previous_verdicts(row, metrics):
+    """kept, reverted or unknown for each change of a history row, from the scan metrics and the change's own metric
+    and baseline. Nothing here comes from a file the agent wrote. A reverted entry the user approved gets ask-retire (S7)."""
+    approved = {e.get("id") for e in entries() if e.get("status") == "active" and e.get("went_live_by") == "approved"}
+    out = []
+    for ch in row.get("changes") or []:
+        if not ch.get("metric"):
+            continue
+        baseline, now_value = ch.get("baseline"), metric_value(metrics, ch["metric"])
+        verdict = verdict_for(baseline, now_value)
+        item = {"id": ch.get("id"), "metric": ch["metric"], "baseline": baseline, "now": now_value, "verdict": verdict}
+        if verdict == "reverted" and ch.get("id") in approved:
+            item["action"] = "ask-retire"  # the user's own yes is theirs to undo
+        out.append(item)
+    return out
+
+
+def cmd_verdicts(project, metrics_path):
+    row = last_row(project)
+    if row is None:
+        return [], 0
+    metrics = checked_metrics(metrics_path)
+    checked_project(Path(metrics_path).resolve().parent, project)  # only the scan in the run folder of this project
+    require_scan_of(metrics, project)
+    auto = {e.get("id") for e in entries() if e.get("status") == "active" and e.get("went_live_by") == "auto"}
+    out = previous_verdicts(row, metrics)
+    for item in out:
+        if item["verdict"] == "reverted" and item["id"] in auto:
+            retire(item["id"], "retro: its metric did not improve")
+    return out, 0
+
+
+def cmd_lessons():
+    history = overlay.read_jsonl(overlay.history_file())
+    lesson_of, out = {}, {}
+    for row in history:
+        for ch in row.get("changes") or []:
+            if ch.get("lesson"):
+                lesson_of[ch.get("id")] = ch["lesson"]
+                item = out.setdefault(ch["lesson"], {"projects": set(), "changes": 0, "kept": 0})
+                item["projects"].add(row.get("project"))
+                item["changes"] += 1
+    for row in history:
+        for v in row.get("previous") or []:
+            if v.get("verdict") == "kept" and v.get("id") in lesson_of:
+                out[lesson_of[v["id"]]]["kept"] += 1
+    return {k: dict(v, projects=len(v["projects"])) for k, v in sorted(out.items())}, 0
+
+
+def discovered_projects():
+    spec = importlib.util.spec_from_loader("retro_scan", SourceFileLoader("retro_scan", str(Path(__file__).with_name("retro-scan"))))
+    scan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scan)
+    return [p["project"] for p in scan.discover()]
+
+
+def private_words(own_project=None):
+    projects = {r.get("project") for r in overlay.read_jsonl(overlay.history_file()) if r.get("project")}
+    projects.update(discovered_projects())
+    words = {Path(p).name.lower() for p in projects}
+    try:
+        words.update(w.strip().lower() for w in (overlay.state_dir() / "private-words.txt").read_text().splitlines())
+    except OSError:
+        pass
+    own = Path(own_project).name.lower() if own_project else None
+    return sorted(w for w in words if len(w) >= 4 and w not in PUBLIC_NAMES and w != own)
+
+
+def report_patterns(strict, own_project=None):
+    return scrub_patterns(strict, private_words(own_project) if strict else ())
+
+
+def cmd_scrub(paths, strict):
+    patterns = report_patterns(strict)
+    hits = [h for p in paths for h in scrub_text(p, read_text_file(p), patterns)]
+    return {"hits": hits}, 1 if hits else 0
+
+
+def draft_file_problems(raw_and_numstat, draft_text):
+    """Problems with which files changed: only a plain content edit (status M, same mode, text) of a file the draft names
+    is allowed. A rename, copy, mode change, binary change or another file has no +/- lines to catch it."""
+    problems = []
+    for line in raw_and_numstat.splitlines():
+        if line.startswith(":"):  # :<old mode> <new mode> <old sha> <new sha> <status>\t<path>[\t<path>]
+            meta, _, paths = line.partition("\t")
+            old_mode, new_mode, status = meta.split()[0][1:], meta.split()[1], meta.split()[-1]
+            path = paths.split("\t")[-1]
+            if status != "M" or old_mode != new_mode:
+                problems.append(f"changed kind of file: {status} {path}")
+            if path not in draft_text:
+                problems.append(f"file not named in the draft: {path}")
+        elif line.startswith("-\t-\t"):
+            problems.append(f"binary: {line.split(chr(9))[-1]}")
+    return problems
+
+
+def cmd_draft_diff(draft, repo):
+    """The repo's uncommitted change (git diff HEAD) must only add lines the draft shows: no deletion, no untracked
+    file, no added line that is not a line of the draft (#204 item 5). Blank added lines pass."""
+    draft_text = read_text_file(draft)
+    shown = {line.strip() for line in draft_text.splitlines() if line.strip()}
+
+    def git(*args):
+        run = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+        if run.returncode:
+            raise CheckError(f"git {args[0]} failed in {repo}")
+        return run.stdout
+
+    extra = [f"untracked: {l[3:]}" for l in git("status", "--porcelain").splitlines() if l.startswith("??")]
+    extra += draft_file_problems(git("diff", "HEAD", "--raw", "--numstat", "--no-color"), draft_text)
+    added = 0
+    in_header = False
+    for line in git("diff", "HEAD", "--unified=0", "--no-color").splitlines():
+        if line.startswith("diff --git"):
+            in_header = True  # the ---/+++ lines up to the first @@ are file headers; later ones are content
+        elif line.startswith("@@"):
+            in_header = False
+        if in_header or line[:1] not in ("+", "-"):
+            continue
+        if line[0] == "-":
+            extra.append(line)
+        elif line[1:].strip():
+            added += 1
+            extra += [line] if line[1:].strip() not in shown else []
+    if not added and not extra:
+        extra.append("no added lines")
+    return {"extra": extra}, 1 if extra else 0
+
+
+def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
+    if not SHA.fullmatch(sha):
+        raise CheckError("--sha must be 7 to 40 lowercase hex characters")
+    source = checked_source(report)
+    run_dir = source.resolve().parent.parent
+    metrics = checked_metrics(metrics_path, run_dir)
+    window = metrics.get("window")
+    date = retro_date(window)
+    changes = load_json(changes_path, list)
+    verdicts = load_json(verdicts_path, list) if verdicts_path else []
+    if not all(isinstance(c, dict) for c in changes + verdicts):
+        raise CheckError("changes and verdicts must be lists of objects")
+    checked_project(run_dir, project)
+    require_scan_of(metrics, project)
+    bad = [c["lesson"] for c in changes if "lesson" in c
+           and not (isinstance(c["lesson"], str) and LESSON_KEY.fullmatch(c["lesson"]))]
+    if bad:
+        raise CheckError(f"lesson keys must match [a-z0-9-]{{1,40}}, got {bad!r}")
+    data = source.read_bytes()  # read once: what is scrubbed is what is written
+    try:
+        text = data.decode("utf-8")
+    except ValueError as err:
+        raise CheckError(f"{report} is not UTF-8 text") from err
+    links = sorted({h["line"] for h in scrub_text(report, text, LINK_PATTERNS)})
+    if links:
+        raise CheckError(f"the report may hold no links or images, found on lines {links}")
+    hits = scrub_text(report, text, report_patterns(strict=True, own_project=project))
+    if hits:
+        return {"published": False, "hits": hits}, 1
+    copied = copied_lines(text, raw_scan_texts(run_dir))
+    if copied:
+        raise CheckError(f"the report copies {COPY_WORDS}+ words of raw scan text on lines {copied}")
+    retros = checked_retros_dir(project)
+    dest = retros / f"{date}-{sha[:7]}.md"
+    if dest.is_symlink() or dest.resolve().parent != retros.resolve():
+        raise CheckError(f"{dest} is outside {retros} or a symlink")
+    for ch in changes:
+        ch["baseline"] = metric_value(metrics, ch.get("metric", ""))
+    previous_row = last_row(project)
+    previous = previous_verdicts(previous_row, metrics) if verdicts_path and previous_row else []  # never the file's own
+    overlay.atomic_write(dest, data)
+    history = overlay.read_jsonl(overlay.history_file())
+    history.append({"project": project, "sha": sha, "since": window.get("since"), "until": window.get("until"),
+                    "headline": metrics.get("headline"), "changes": changes, "previous": previous})
+    overlay.write_jsonl(overlay.history_file(), history)
+    return {"published": True, "path": str(dest)}, 0
+
+
+def build_parser():
+    ap = argparse.ArgumentParser(description="Retro Engine checks and overlay writer.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("apply")
+    p.add_argument("candidates")
+    p.add_argument("--mode", choices=("draft",))
+    sub.add_parser("check").add_argument("entry")
+    for name in USER_ONLY:
+        sub.add_parser(name).add_argument("id")
+    p = sub.add_parser("verdicts")
+    p.add_argument("--project", required=True)
+    p.add_argument("--metrics", required=True)
+    sub.add_parser("lessons")
+    sub.add_parser("repair")
+    p = sub.add_parser("scrub")
+    p.add_argument("files", nargs="+")
+    p.add_argument("--strict", action="store_true")
+    p = sub.add_parser("draft-diff")
+    p.add_argument("draft")
+    p.add_argument("repo")
+    p = sub.add_parser("publish")
+    p.add_argument("report")
+    for flag in ("--project", "--sha", "--metrics", "--changes"):
+        p.add_argument(flag, required=True)
+    p.add_argument("--verdicts")
+    return ap
+
+
+def run(a):
+    if a.cmd in USER_ONLY + ("repair",) and os.environ.get(HEADLESS_ENV) == "1":
+        raise CheckError(f"{a.cmd} is for the user: refused while {HEADLESS_ENV}=1")
+    by_id = {"approve": cmd_approve, "drop": cmd_drop, "retire": cmd_retire, "keep": cmd_keep}
+    if a.cmd in by_id:
+        return by_id[a.cmd](a.id)
+    if a.cmd == "repair":
+        return cmd_repair()
+    if a.cmd == "apply":
+        return cmd_apply(a.candidates, a.mode)
+    if a.cmd == "check":
+        return cmd_check(a.entry)
+    if a.cmd == "verdicts":
+        return cmd_verdicts(str(Path(a.project).resolve()), a.metrics)
+    if a.cmd == "lessons":
+        return cmd_lessons()
+    if a.cmd == "scrub":
+        return cmd_scrub(a.files, a.strict)
+    if a.cmd == "draft-diff":
+        return cmd_draft_diff(a.draft, a.repo)
+    return cmd_publish(a.report, str(Path(a.project).resolve()), a.sha, a.metrics, a.changes, a.verdicts)
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
+    try:
+        with overlay.locked() if a.cmd not in READ_ONLY else nullcontext():
+            out, code = run(a)
+    except (CheckError, OSError, ValueError) as err:  # a clear message and exit 2, never a traceback
+        out, code = {"error": str(err)}, 2
+    # check prints one line: the skill and the agent read it as a single verdict, the other commands print lists
+    print(json.dumps(out, indent=None if a.cmd == "check" else 1, ensure_ascii=False))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

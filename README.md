@@ -8,7 +8,7 @@
 
 An open-source AI software team for Claude Code: 10+ agents (Architect, Developer, Tester, PM, Security, UX and more) that take your spec to a tested, reviewed release.
 
-**[Use it](#quick-start). [Improve it](#contribute). [Star it](https://github.com/achisolomon/software-factory).**
+**[Use it](#quick-start). [Improve it](#contribute). [Star it](https://github.com/achisolomon/open-software-factory).**
 
 ## See it work
 
@@ -16,7 +16,7 @@ A real run on [aitoolreview.ai](https://aitoolreview.ai): the Team Lead dispatch
 
 https://github.com/user-attachments/assets/8dabfe4a-e521-4b5e-9639-d8af3ca6259e
 
-The agents are checked too: 29 behavior evals and 142 offline tests guard their rules and approval gates.
+The agents are checked too: 31 behavior evals and 407 offline tests guard their rules and approval gates.
 
 ## What you get
 
@@ -27,7 +27,7 @@ The agents are checked too: 29 behavior evals and 142 offline tests guard their 
 
 ## Meet the team
 
-13 agents, what each one does and the model it runs on:
+14 agents, what each one does and the model it runs on:
 
 | Agent | Model | What it does |
 |---|---|---|
@@ -44,17 +44,18 @@ The agents are checked too: 29 behavior evals and 142 offline tests guard their 
 | **Security Engineer** | Opus | Threat model (STRIDE), security requirements (ASVS), security reviews and scans, final release gate |
 | **UX/UI Designer** | Sonnet | User flows, textual screen specs and design tokens, usability and accessibility (WCAG 2.2 AA) reviews of UI changes, final UX gate |
 | **Performance Engineer** | Opus | Load tester and sizing expert: finds what breaks under load (missing indexes, N+1, deadlocks, pool limits), sizes the system against the NFRs, plans and runs load tests. Runs before a merge to main or a deploy, and when you ask, not per task |
+| **Retro** | Sonnet | Once a day, for each factory project whose main moved, reads the sessions (errors, approval prompts, time per task, your corrections) and drafts at most 2 fixes for the causes as your own lessons, which wait for your yes. Lessons seen in 3+ projects become a draft change to the plugin. Runs on your machine; your messages are never quoted: the report holds counts and paraphrases and is copied into the project |
 
 Read-only lookups run on Haiku. To change the policy, see [Tips](#tips).
 
-Current version: 0.9.0. What changed in each release, newest first: [release notes](CHANGELOG.md).
+Current version: 0.10.0. What changed in each release, newest first: [release notes](CHANGELOG.md).
 
 ## Quick start
 
 1. **Install once per machine.** Paste this line into a terminal (in VS Code: Terminal > New Terminal, not the Claude chat box):
 
    ```bash
-   claude plugin marketplace add achisolomon/software-factory && claude plugin install software-factory@software-factory-marketplace --scope user
+   claude plugin marketplace add achisolomon/open-software-factory && claude plugin install software-factory@software-factory-marketplace --scope user
    ```
 
    It ends with `Successfully installed plugin: software-factory@software-factory-marketplace (scope: user)`. Then reload VS Code: Cmd+Shift+P, **Developer: Reload Window**.
@@ -92,6 +93,7 @@ Current version: 0.9.0. What changed in each release, newest first: [release not
 - **Work in a worktree.** Ask Claude to enter a worktree before it starts (Claude Code's `EnterWorktree`), so each session gets its own branch and working copy, and parallel sessions on the same repo never collide. See [AI Tool Review's guide to Claude Code worktrees](https://aitoolreview.ai/guides/claude-code-worktrees/).
 - **Compact early.** Once the context passes about half full, compact: long runs get slower, costlier and less accurate as the context fills. `/software-factory:session-setup` sets auto-compact (default 30% of the window) so it happens on its own. The Team Lead keeps its state on disk after every wave, so after a compaction it carries on without a hand-written summary; run `/software-factory:resume` if it seems lost.
 - **Models**: the Team Lead sets the model for each delegation by the kind of work (the table in [Meet the team](#meet-the-team)). Fable runs only when you ask for it. Set `Model policy: default | conserve | quality | max` in `project-facts.md`. `max` puts the Team Lead and the Architect's design and reviews on Fable and the rest on Opus. It is not recommended: it can burn through your Claude limits very fast. You can also just say "conserve my limits" mid-session; conserving changes models, never steps or gates. Each agent's frontmatter `model:` is only the fallback.
+- **Choose who is on the team**: the `- Team:` line in `project-facts.md` sets Security, UX, FinOps and DevOps each to `per-task`, `per-epic` or `off` (default: Security once per epic, the rest per task). Security still reviews a task whenever it touches auth, security rules, secrets, dependencies, payments or migrations. Or just say "skip UX for this epic".
 - **Speed**: set `Pace: speed` (or say "I want speed") to trade extra checking for speed: fewer optional reviewers and skeptic runs, independent tasks in parallel; gates, approvals and Security stay.
 - **Project memory**: specialists keep learnings in `.claude/agent-memory/<agent>/` per project. Commit it to share with your team, or add it to `.gitignore`.
 - **GitHub issue tracking**: give `gh` the `project` scope once: `gh auth refresh -s project`. Without it, tasks are tracked in `docs/architecture/tasks.md`. Init also offers the GitHub MCP server instead of `gh` for the Product Manager and Project Manager (no shell for them, but you add the server with a personal access token); `gh` is the recommended default.
@@ -104,10 +106,10 @@ Current version: 0.9.0. What changed in each release, newest first: [release not
 
 Every improvement you make for your own projects can make the factory better for everyone:
 
-- **Found a gap?** [Open an issue](https://github.com/achisolomon/software-factory/issues/new): a review the agents missed, a gate that was too loose or too strict, a step that wasted time or tokens.
-- **Want to start small?** Pick a [`good first issue`](https://github.com/achisolomon/software-factory/labels/good%20first%20issue).
+- **Found a gap?** [Open an issue](https://github.com/achisolomon/open-software-factory/issues/new): a review the agents missed, a gate that was too loose or too strict, a step that wasted time or tokens.
+- **Want to start small?** Pick a [`good first issue`](https://github.com/achisolomon/open-software-factory/labels/good%20first%20issue).
 - **Fixed it?** Open a pull request. Agent prompts live in `plugin/agents/`, the shared rules in `plugin/reference/handoff-contract.md`, and the code-enforced gates in `plugin/hooks/`. See [CONTRIBUTING.md](CONTRIBUTING.md).
-- **Have an idea?** Check [docs/improvement-backlog.md](docs/improvement-backlog.md) first, then start a [discussion](https://github.com/achisolomon/software-factory/discussions).
+- **Have an idea?** Check [docs/improvement-backlog.md](docs/improvement-backlog.md) first, then start a [discussion](https://github.com/achisolomon/open-software-factory/discussions).
 - **Like it?** Give it a star and tell a friend.
 
 </details>
@@ -177,6 +179,8 @@ Or call any specialist directly, for example:
 ```bash
 claude plugin marketplace update software-factory-marketplace && claude plugin update software-factory@software-factory-marketplace --scope user
 ```
+
+If it prints "The current directory no longer exists", the terminal is in a deleted folder (for example a removed worktree). Run `cd ~` and repeat the command.
 
 Then run Developer: Reload Window (Cmd+Shift+P) or restart Claude Code, and start a new chat. A chat that is already open keeps the old instructions.
 
