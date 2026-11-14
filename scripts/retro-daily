@@ -22,8 +22,9 @@ import sys
 SCAN_TIMEOUT = 1800
 AGENT_TIMEOUT = 3600
 WORK_DIR = "work"  # the agent's only run subfolder; keep in step with retro-check
-DISALLOWED = "WebFetch,WebSearch,Agent,mcp__*"
+DISALLOWED = ("WebFetch", "WebSearch", "Agent", "mcp__*")
 SECRET_FOLDERS = (".ssh", ".aws", ".config/gcloud")  # never readable, even if a scoped rule would cover them
+SECRET_PROJECT_GLOBS = ("**/.env*", "**/*.pem", "**/*.key", "**/*.tfstate*", "**/credentials*.json")
 MAX_PROJECTS_PER_DAY = 5
 LOG_LIMIT = 1_000_000  # bytes; a bigger retro.log moves to retro.log.1
 
@@ -48,28 +49,30 @@ def plugin_root():
 
 
 def read_rule(folder):
-    return f"Read(/{folder}/**)"  # absolute paths in permission rules take a leading '//'
+    return f"Read(/{folder}/**)"  # absolute paths in permission rules take a leading '//'; others are cwd-relative
 
 
 def allowed_tools(root, state, run_dir, project):
     """One rule per allowed command. No network, git, MCP or scan tool. Edit rules (the only ones that grant writes)
     cover <run>/work and upstream/ and nothing else, so the launcher's files stay out of reach (#154, #172, #192).
-    Reads cover only the run and state folders, the plugin and the due project (#197). Claude Code checks Grep and
+    Reads cover only this run, overlay/ and upstream/, the plugin and the due project (#197). Claude Code checks Grep and
     Glob against Read rules, so they get no rule of their own."""
     check = f"Bash(python3 {root}/scripts/retro-check"
-    rules = [read_rule(folder) for folder in (run_dir, state, root, project)]
+    rules = [read_rule(folder) for folder in (run_dir, state / "overlay", state / "upstream", root, project)]
     rules += [f"{check} apply *)",
               f"{check} verdicts --project *)",
               f"{check} lessons)",
               f"{check} scrub *)",
               f"{check} publish *)"]
     rules += [f"Edit(/{folder}/**)" for folder in (run_dir / WORK_DIR, state / "upstream")]
-    return ",".join(rules)
+    return rules
 
 
-def disallowed_tools(home):
+def disallowed_tools(home, project):
+    """Rule list. Secret globs are anchored to the project: a bare glob would be relative to the run folder."""
     secrets = [read_rule(home / folder) for folder in SECRET_FOLDERS]
-    return ",".join([DISALLOWED, *secrets, "Read(**/.env*)"])
+    in_project = [f"Read(/{Path(project) / glob})" for glob in SECRET_PROJECT_GLOBS]
+    return [*DISALLOWED, *secrets, *in_project]
 
 
 def slug_map(projects):
@@ -119,11 +122,12 @@ def scan_project(root, run_dir, project, slug):
 
 
 def agent_command(root, state, run_dir, project, prompt):
-    """Headless call, locked down (#193): no user or local settings, no MCP, no network, no sub-agents, no prompts."""
+    """Headless call, locked down (#193): no user or local settings, no MCP, no network, no sub-agents, no prompts.
+    Each rule is its own argv item; the prompt comes first so the variadic tool flags cannot swallow it."""
     return ["claude", "-p", prompt, "--plugin-dir", str(root), "--agent", "software-factory:retro",
             "--permission-mode", "dontAsk", "--setting-sources", "project", "--strict-mcp-config",
-            "--disallowedTools", disallowed_tools(Path.home()),
-            "--allowedTools", allowed_tools(root, state, run_dir, project)]
+            "--disallowedTools", *disallowed_tools(Path.home(), project),
+            "--allowedTools", *allowed_tools(root, state, run_dir, project)]
 
 
 def agent_env():
@@ -135,6 +139,8 @@ def agent_env():
 
 def run_agent(root, state, run_dir, project, slug, log):
     """Failure word, or None when the headless run succeeded."""
+    if Path(project["project"]) in (Path.home(), Path("/")):
+        return "bad-project"  # a read rule on the whole home folder or disk would defeat the scoping (#197)
     problem = scan_project(root, run_dir, project, slug)
     if problem:
         return problem

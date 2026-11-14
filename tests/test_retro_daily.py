@@ -13,11 +13,13 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
-EXPECTED_DENIED = ("WebFetch,WebSearch,Agent,mcp__*,Read(//h/.ssh/**),Read(//h/.aws/**),"
-                   "Read(//h/.config/gcloud/**),Read(**/.env*)")
-EXPECTED_TOOLS = ",".join([
-    "Read(//h/.software-factory/retros/2026-11-14/**)", "Read(//h/.software-factory/**)", "Read(//opt/plugin/**)",
-    "Read(//w/alpha/**)",
+EXPECTED_DENIED = [
+    "WebFetch", "WebSearch", "Agent", "mcp__*", "Read(//h/.ssh/**)", "Read(//h/.aws/**)", "Read(//h/.config/gcloud/**)",
+    "Read(//w/alpha/**/.env*)", "Read(//w/alpha/**/*.pem)", "Read(//w/alpha/**/*.key)", "Read(//w/alpha/**/*.tfstate*)",
+    "Read(//w/alpha/**/credentials*.json)"]
+EXPECTED_TOOLS = ([
+    "Read(//h/.software-factory/retros/2026-11-14/**)", "Read(//h/.software-factory/overlay/**)",
+    "Read(//h/.software-factory/upstream/**)", "Read(//opt/plugin/**)", "Read(//w/alpha/**)",
     "Bash(python3 /opt/plugin/scripts/retro-check apply *)",
     "Bash(python3 /opt/plugin/scripts/retro-check verdicts --project *)",
     "Bash(python3 /opt/plugin/scripts/retro-check lessons)",
@@ -91,19 +93,27 @@ class RetroDailyTests(unittest.TestCase):
 
     def test_allowed_tools_string_is_exact(self):  # R7
         self.assertEqual(self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha"), EXPECTED_TOOLS)
-        self.assertEqual(self.daily.disallowed_tools(Path("/h")), EXPECTED_DENIED)
+        self.assertEqual(self.daily.disallowed_tools(Path("/h"), "/w/alpha"), EXPECTED_DENIED)
 
     def test_no_read_rule_covers_the_home_folder_or_a_secret_folder_and_nothing_is_unscoped(self):  # #197
-        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha").split(",")
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha")
         for bare in ("Read", "Grep", "Glob"):
             self.assertNotIn(bare, rules)
         reads = {r for r in rules if r.startswith("Read(")}
-        self.assertEqual(len(reads), 4)
+        self.assertEqual(len(reads), 5)
         self.assertFalse(reads & {"Read(//h/**)", "Read(///**)", "Read(//**)", "Read(//h/.ssh/**)", "Read(//h/.aws/**)",
-                                  "Read(//h/.config/**)", "Read(//h/.config/gcloud/**)"})
+                                  "Read(//h/.config/**)", "Read(//h/.config/gcloud/**)", "Read(//h/.software-factory/**)"})
+        self.assertFalse([r for r in rules if "retro.log" in r or "private-words" in r])
+
+    def test_a_project_that_is_the_home_folder_or_root_is_refused_with_bad_project(self):  # #197
+        for bad in (str(Path.home()), "/"):
+            with mock.patch.object(self.daily.subprocess, "run") as run:
+                word = self.daily.run_agent(Path("/opt/plugin"), self.state, self.base, {"project": bad}, "x", self.base / "log")
+            self.assertEqual(word, "bad-project")
+            run.assert_not_called()
 
     def test_allowed_tools_have_no_wildcard_check_no_network_scan_or_launcher_file_write(self):  # #172, #154, #192
-        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha").split(",")
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha")
         self.assertNotIn("Bash(python3 /opt/plugin/scripts/retro-check *)", rules)
         self.assertFalse([r for r in rules if r.startswith("Bash(") and "retro-check" not in r])
         for banned in ("WebFetch", "WebSearch", "mcp__", "git", "gh ", "curl", "retro-scan", "Write("):
@@ -122,8 +132,9 @@ class RetroDailyTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(cmd, ["claude", "-p", prompt, "--plugin-dir", "/opt/plugin", "--agent", "software-factory:retro",
                                "--permission-mode", "dontAsk", "--setting-sources", "project", "--strict-mcp-config",
-                               "--disallowedTools", self.daily.disallowed_tools(Path.home()),
-                               "--allowedTools", self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir, "/w/alpha")])
+                               "--disallowedTools", *self.daily.disallowed_tools(Path.home(), "/w/alpha"),
+                               "--allowedTools", *self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir, "/w/alpha")])
+        self.assertTrue(all("," not in rule for rule in cmd[cmd.index("--disallowedTools") + 1:]))
         self.assertEqual(kw["cwd"], str(run_dir))
         self.assertIn(f"Scan file (already made, read it): {run_dir}/alpha.json", prompt)
         self.assertEqual(json.loads((run_dir / "due.json").read_text()), ["/w/alpha"])
