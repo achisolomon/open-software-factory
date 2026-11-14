@@ -64,6 +64,8 @@ SCRUB_PATTERNS = (("home path", HOME_PATH, True), ("tilde path", TILDE_PATH, Tru
                   ("temp path", TEMP_PATH, True), ("email", EMAIL, True), ("token", TOKEN, False),
                   ("jwt", JWT, False), ("google api key", GOOGLE_API_KEY, False), ("private key", PRIVATE_KEY, False),
                   ("key assignment", KEY_ASSIGNMENT, False), ("password pair", PASSWORD_PAIR, False))
+# A report holds no links or images: a viewer fetches an image URL, which would send data out (#201).
+LINK = re.compile(r"\]\(|<img\b|<a\s|\b(?:src|href)\s*=|://|\bdata:[\w.+-]+/[\w.+-]+[;,]", re.I)
 PUBLIC_NAMES = {"software-factory", "open-software-factory"}
 
 # The (agent file, heading) pairs an accepted entry may go live on without the user's yes (auto-fix mode), and only
@@ -242,17 +244,19 @@ def cmd_verdicts(project, metrics_path):
         return [], 0
     metrics = checked_metrics(metrics_path)
     require_scan_of(metrics, project)
-    went_live = {e.get("id") for e in entries() if e.get("went_live_by") == "auto"}  # the user's own yes is theirs to undo
+    went_live = {e.get("id"): e.get("went_live_by") for e in entries() if e.get("status") == "active"}
     out = []
     for ch in rows[-1].get("changes") or []:
         if not ch.get("metric"):
             continue
         baseline, now_value = ch.get("baseline"), metric_value(metrics, ch["metric"])
         verdict = verdict_for(baseline, now_value)
-        if verdict == "reverted" and ch.get("id") in went_live:
+        row = {"id": ch.get("id"), "metric": ch["metric"], "baseline": baseline, "now": now_value, "verdict": verdict}
+        if verdict == "reverted" and went_live.get(ch.get("id")) == "auto":
             retire(ch["id"], "retro: its metric did not improve")
-        out.append({"id": ch.get("id"), "metric": ch["metric"], "baseline": baseline, "now": now_value,
-                    "verdict": verdict})
+        elif verdict == "reverted" and went_live.get(ch.get("id")) == "approved":
+            row["action"] = "ask-retire"  # the user's own yes is theirs to undo (S7)
+        out.append(row)
     return out, 0
 
 
@@ -295,6 +299,7 @@ def private_words(own_project=None):
 def scrub_patterns(strict, own_project=None):
     patterns = list(SCRUB_PATTERNS)
     if strict:
+        patterns.append(("link", LINK, False))
         patterns += [("project name", re.compile(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", re.I), True)
                      for w in private_words(own_project)]
     return patterns
@@ -457,6 +462,9 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
         text = data.decode("utf-8")
     except ValueError as err:
         raise CheckError(f"{report} is not UTF-8 text") from err
+    links = sorted({h["line"] for h in scrub_text(report, text, [("link", LINK, False)])})
+    if links:
+        raise CheckError(f"the report may hold no links or images, found on lines {links}")
     hits = scrub_text(report, text, scrub_patterns(strict=True, own_project=project))
     if hits:
         return {"published": False, "hits": hits}, 1

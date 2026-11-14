@@ -83,7 +83,10 @@ class ReleaseFilesTests(unittest.TestCase):
         self.assertIn("Apply \"The factory brain\" rules", lead)
         setup = read("skills/session-setup/SKILL.md")
         self.assertNotIn("always ask", setup)
-        self.assertIn("every fix still waits for the user's yes", setup)
+        self.assertIn("Do not offer auto-fix", setup)
+        self.assertNotIn("`auto-fix`", setup)
+        self.assertNotIn("auto-fix", read("CHANGELOG.md").split("## ", 2)[1])
+        self.assertNotIn("auto-fix", read("README.md"))
         self.assertIn("- **Overlay**: the overlay lines for this role", read("agents/team-lead.md"))
 
     def test_readme_team_table_lists_every_agent(self):

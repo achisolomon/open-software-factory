@@ -30,7 +30,7 @@ The prompt gives you:
 Make `<slug>` from the project folder's name: lowercase letters, digits and dashes only (turn anything else into a dash), cut to 16 characters. A scheduled run's prompt names the slug and scan file to use; they win over this rule (two projects can share a name).
 
 1. **Scan.** Read the scan file `<RUN>/<slug>.json`. If it is missing, write a one-line report for this project and go on.
-2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<WORK>/<slug>-verdicts.json`. The script already retires overlay entries the user reverted; say so in the report.
+2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<WORK>/<slug>-verdicts.json`. A verdict with `"action": "ask-retire"` is a change the user approved whose metric did not improve: list each under "Ask the user" with its entry id, as a change that did not help, proposed for dropping. The user decides; never retire it yourself. The report holds no links or images.
 3. **Find the top 3 frictions.** Each one cites numbers from the scan. Look for:
    - one hook block reason repeated many times: agents do not know a rule, or the rule is wrong;
    - a sandbox-off command shape repeated: a missing allow rule or project script. A shape that starts with a wrapper program in front of the real one (for example `<wrapper> gh`) means a machine setup problem: some tool rewrites commands so they miss the sandbox exclusions;
@@ -42,7 +42,7 @@ Make `<slug>` from the project folder's name: lowercase letters, digits and dash
    - `project`: a brain note for that project. Put it under "Brain notes" in the report; the Team Lead adds it.
    - `setup`: a problem in the user's machine setup. Put the exact fix under "Your setup". Never apply it.
    - `plugin`: only when the lesson passes the upstream bar below.
-5. **Apply.** Only when you wrote a candidates file, run `retro-check apply <WORK>/<slug>-candidates.jsonl`. The script checks every entry and sorts it: rejected (with its reason, which you report), or pending. Nothing goes live by itself: even in auto-fix mode, every accepted entry waits for the user's yes, and entries that touch security or lower a review always wait. Report each pending entry under "Ask the user". Never write the overlay files yourself.
+5. **Apply.** Only when you wrote a candidates file, run `retro-check apply <WORK>/<slug>-candidates.jsonl`. The script checks every entry and sorts it: rejected (with its reason, which you report), or pending. Nothing goes live by itself: every accepted entry waits for the user's yes, and entries that touch security or lower a review always wait. Report each pending entry under "Ask the user". Never write the overlay files yourself.
 6. **Report.** Write `<WORK>/<slug>.md` with the template below. Counts and paraphrases only: no quotes of the user, no file paths, no emails, no customer or people names.
 7. **Publish.** Write `<WORK>/<slug>-changes.json` (a JSON list of `{id, lesson, level, owner, asset, metric}`). Run `retro-check publish <WORK>/<slug>.md --project <project> --sha <sha> --metrics <RUN>/<slug>.json --changes <WORK>/<slug>-changes.json --verdicts <WORK>/<slug>-verdicts.json`. If it reports hits, remove them from the report and run it once more.
 
