@@ -27,7 +27,7 @@ The prompt gives you:
 
 # Steps for each project
 
-Make `<slug>` from the project folder's name: lowercase letters, digits and dashes only (turn anything else into a dash), cut to 16 characters.
+Make `<slug>` from the project folder's name: lowercase letters, digits and dashes only (turn anything else into a dash), cut to 16 characters. A scheduled run's prompt names the slug and scan file to use; they win over this rule (two projects can share a name).
 
 1. **Scan.** Read the scan file `<RUN>/<slug>.json`. If it is missing, write a one-line report for this project and go on.
 2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<WORK>/<slug>-verdicts.json`. The script already retires overlay entries the user reverted; say so in the report.

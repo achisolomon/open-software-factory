@@ -240,7 +240,8 @@ def cmd_verdicts(project, metrics_path):
     rows = [r for r in overlay.read_jsonl(overlay.history_file()) if r.get("project") == project]
     if not rows:
         return [], 0
-    metrics = load_json(metrics_path, dict)
+    metrics = checked_metrics(metrics_path)
+    require_scan_of(metrics, project)
     went_live = {e.get("id") for e in entries() if e.get("went_live_by") == "auto"}  # the user's own yes is theirs to undo
     out = []
     for ch in rows[-1].get("changes") or []:
@@ -343,12 +344,20 @@ def checked_source(report):
     return src
 
 
-def checked_metrics(metrics_path, run_dir):
-    """The metrics file, when it is a scan file directly in the run folder, which the agent cannot write."""
+def checked_metrics(metrics_path, run_dir=None):
+    """The metrics, when the file is a scan file directly in a run folder <state>/retros/<day>/ (the given one, if any),
+    which the agent cannot write."""
     path = Path(metrics_path)
-    if path.is_symlink() or path.resolve().parent != run_dir:
-        raise CheckError(f"--metrics must be a scan file directly in {run_dir}")
-    return path
+    folder = path.resolve().parent
+    if path.is_symlink() or folder.parent != (overlay.state_dir() / "retros").resolve() or run_dir not in (None, folder):
+        raise CheckError(f"--metrics must be a scan file directly in {run_dir or 'a run folder under <state>/retros'}")
+    return load_json(path, dict)
+
+
+def require_scan_of(metrics, project):
+    """CheckError unless the scan describes this project, so one project's scan cannot stand in for another's."""
+    if str(Path(str(metrics.get("project"))).resolve()) != project:
+        raise CheckError(f"--metrics is not the scan of {project}")
 
 
 def checked_retros_dir(project):
@@ -399,15 +408,21 @@ def raw_scan_texts(run_dir):
     return texts
 
 
+def plain_words(line):
+    """Lower-case words with punctuation and a leading list marker dropped, so quotes and bullets hide no copy."""
+    text = re.sub(r"^\s*(?:[-*+>]|\d+[.)])\s+", " ", overlay.squash(line).lower())
+    return re.sub(r"[\W_]+", " ", text).split()
+
+
 def word_runs(text):
-    words = overlay.squash(text).lower().split()
+    words = plain_words(text)
     return {" ".join(words[i:i + COPY_WORDS]) for i in range(len(words) - COPY_WORDS + 1)}
 
 
 def copied_lines(text, raw_texts):
     """Line numbers of the report that share COPY_WORDS or more words in a row with any raw text (N1)."""
     raw = set().union(*map(word_runs, raw_texts))
-    words = [(n, w) for n, line in enumerate(text.splitlines(), 1) for w in overlay.squash(line).lower().split()]
+    words = [(n, w) for n, line in enumerate(text.splitlines(), 1) for w in plain_words(line)]
     hit = set()
     for i in range(len(words) - COPY_WORDS + 1):  # one word stream, so a copy wrapped over two lines still matches
         window = words[i:i + COPY_WORDS]
@@ -421,7 +436,7 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
         raise CheckError("--sha must be 7 to 40 lowercase hex characters")
     source = checked_source(report)
     run_dir = source.resolve().parent.parent
-    metrics = load_json(checked_metrics(metrics_path, run_dir), dict)
+    metrics = checked_metrics(metrics_path, run_dir)
     window = metrics.get("window")
     date = retro_date(window)
     changes = load_json(changes_path, list)
@@ -429,7 +444,8 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
     if not all(isinstance(c, dict) for c in changes + verdicts):
         raise CheckError("changes and verdicts must be lists of objects")
     checked_project(run_dir, project)
-    bad = [c["lesson"] for c in changes if "lesson" in c
+    require_scan_of(metrics, project)
+    bad =[c["lesson"] for c in changes if "lesson" in c
            and not (isinstance(c["lesson"], str) and LESSON_KEY.fullmatch(c["lesson"]))]
     if bad:
         raise CheckError(f"lesson keys must match [a-z0-9-]{{1,40}}, got {bad!r}")

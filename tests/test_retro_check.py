@@ -529,10 +529,10 @@ class CheckCliTests(unittest.TestCase):
     def run_dir(self):
         return self.state / "retros" / "2026-11-14"
 
-    def metrics(self, **headline):
+    def metrics(self, scan_of=None, **headline):
         self.run_dir.mkdir(parents=True, exist_ok=True)
         path = self.run_dir / "m.json"
-        path.write_text(json.dumps({"sessions": 2, "window": {"since": "2026-11-13T00:00:00+00:00",
+        path.write_text(json.dumps({"project": str(scan_of or self.project), "sessions": 2, "window": {"since": "2026-11-13T00:00:00+00:00",
                                                               "until": "2026-11-14T00:00:00+00:00"},
                                     "headline": dict({"errors": 10}, **headline), "sandbox_off": {"rtk gh": 6}}))
         return path
@@ -623,8 +623,8 @@ class CheckCliTests(unittest.TestCase):
         self.assertTrue(dest.is_file())
         row = overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]
         self.assertEqual((row["sha"], row["changes"][0]["baseline"]), ("abcdef1234", 3.0))
-        worse = self.base / "m2.json"
-        worse.write_text(json.dumps({"sessions": 1, "sandbox_off": {"rtk gh": 4}, "headline": {}}))
+        worse = self.run_dir / "m2.json"
+        worse.write_text(json.dumps({"project": str(self.project), "sessions": 1, "sandbox_off": {"rtk gh": 4}, "headline": {}}))
         verdicts = self.check("verdicts", "--project", self.project, "--metrics", worse)
         self.assertEqual([(v["id"], v["verdict"]) for v in verdicts], [("ok", "reverted")])
         self.assertEqual(self.rows("entries")[0]["status"], "retired")
@@ -816,7 +816,7 @@ class CheckCliTests(unittest.TestCase):
     def metrics_with(self, window):
         self.run_dir.mkdir(parents=True, exist_ok=True)
         path = self.run_dir / "mw.json"
-        path.write_text(json.dumps({"sessions": 1, "window": window, "headline": {}}))
+        path.write_text(json.dumps({"project": str(self.project), "sessions": 1, "window": window, "headline": {}}))
         return path
 
     def test_publish_refuses_a_missing_or_non_date_until(self):  # #173, #171
@@ -854,7 +854,7 @@ class CheckCliTests(unittest.TestCase):
         bare.mkdir()
         report = self.report()
         (self.run_dir / "due.json").write_text(json.dumps([str(bare)]))
-        self.assertIn("docs/factory", self.publish(report=report, project=bare, code=2)["error"])
+        self.assertIn("docs/factory", self.publish(report=report, project=bare, metrics=self.metrics(scan_of=bare), code=2)["error"])
 
     def test_publish_refuses_a_report_outside_the_state_retros_folder_or_a_symlink(self):  # #173
         outside = self.base / "r.md"
@@ -920,9 +920,55 @@ class CheckCliTests(unittest.TestCase):
 
     def run_verdicts(self, changes, metrics, history_before=()):
         self.history(list(history_before) + [{"project": str(self.project), "changes": changes}])
-        path = self.base / "vm.json"
-        path.write_text(json.dumps(metrics))
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        path = self.run_dir / "vm.json"
+        path.write_text(json.dumps(dict(metrics, project=str(self.project))))
         return self.check("verdicts", "--project", self.project, "--metrics", path)
+
+    def test_verdicts_refuse_a_metrics_file_outside_a_run_folder_or_of_another_project(self):  # R3
+        self.history([{"project": str(self.project), "changes": [{"id": "c", "metric": "errors", "baseline": 1}]}])
+        forged = self.base / "forged.json"
+        forged.write_text(json.dumps({"project": str(self.project), "headline": {"errors": 0}}))
+        self.assertIn("--metrics", self.check("verdicts", "--project", self.project, "--metrics", forged, code=2)["error"])
+        agent_made = self.run_dir / "work" / "m.json"
+        agent_made.parent.mkdir(parents=True)
+        agent_made.write_text(forged.read_text())
+        self.assertIn("--metrics", self.check("verdicts", "--project", self.project, "--metrics", agent_made, code=2)["error"])
+        elsewhere = self.metrics(scan_of=self.base / "work" / "other-app")
+        self.assertIn("not the scan of", self.check("verdicts", "--project", self.project, "--metrics", elsewhere, code=2)["error"])
+
+    def test_publish_refuses_the_scan_of_another_project(self):  # R2
+        other = self.base / "work" / "other-app"
+        (other / "docs" / "factory").mkdir(parents=True)
+        report = self.report()
+        (self.run_dir / "due.json").write_text(json.dumps([str(self.project), str(other)]))
+        self.assertIn("not the scan of", self.publish(report=report, project=other, code=2)["error"])
+        self.assertFalse((other / "docs" / "factory" / "retros").exists())
+
+    def test_publish_refuses_an_eight_word_copy_in_quotes_or_split_across_list_items(self):  # N1, m1
+        self.scan_file(review_samples=["please rename this helper before we merge it"])
+        for text in ('- "please rename this helper before we merge it." was said\n',
+                     "- please rename this\n\n- helper before we merge it\n",
+                     "1. please rename this\n2) helper before we merge it\n"):
+            self.assertIn("copies", self.publish(report=self.report(f"# Retro\n\n{text}"), code=2)["error"], text)
+
+    def test_checked_source_refuses_a_report_in_another_run_subfolder(self):  # Test mutation survivor
+        other = self.run_dir / "other" / "r.md"
+        other.parent.mkdir(parents=True)
+        other.write_text("# Retro\n")
+        module = load_check()
+        with mock.patch.dict(os.environ, {"SOFTWARE_FACTORY_HOME": str(self.state)}):
+            with self.assertRaises(module.CheckError):
+                module.checked_source(other)
+            module.checked_source(self.report())
+
+    def test_the_scan_texts_are_read_from_the_run_folder_only(self):  # #192
+        self.scan_file(review_samples=["please rename this helper before we merge it"])
+        work = self.run_dir / "work"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "agent.json").write_text(json.dumps({"review_samples": ["agent planted text"]}))
+        module = load_check()
+        self.assertEqual(module.raw_scan_texts(self.run_dir), ["please rename this helper before we merge it"])
 
     def test_verdicts_compare_with_the_baseline_and_an_absent_metric_is_unknown(self):  # #170, #169
         metrics = {"sessions": 1, "headline": {"errors": 3}, "sandbox_off": {"rtk gh": 4, "zero": 0}}
@@ -944,7 +990,7 @@ class CheckCliTests(unittest.TestCase):
         out = self.run_verdicts([{"id": "new", "metric": "errors", "baseline": 9}], {"headline": {"errors": 1}}, [old])
         self.assertEqual([v["id"] for v in out], ["new"])
         self.history([{"project": str(self.project), "changes": [{"id": "mine", "metric": "errors", "baseline": 9}]}, other])
-        metrics = self.base / "vm.json"
+        metrics = self.run_dir / "vm.json"
         self.assertEqual([v["id"] for v in self.check("verdicts", "--project", self.project, "--metrics", metrics)], ["mine"])
 
     def test_verdicts_retire_only_reverted_entries_that_went_live(self):  # #169, S7

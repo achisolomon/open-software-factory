@@ -13,8 +13,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
+EXPECTED_DENIED = ("WebFetch,WebSearch,Agent,mcp__*,Read(//h/.ssh/**),Read(//h/.aws/**),"
+                   "Read(//h/.config/gcloud/**),Read(**/.env*)")
 EXPECTED_TOOLS = ",".join([
-    "Read", "Grep", "Glob",
+    "Read(//h/.software-factory/retros/2026-11-14/**)", "Read(//h/.software-factory/**)", "Read(//opt/plugin/**)",
+    "Read(//w/alpha/**)",
     "Bash(python3 /opt/plugin/scripts/retro-check apply *)",
     "Bash(python3 /opt/plugin/scripts/retro-check verdicts --project *)",
     "Bash(python3 /opt/plugin/scripts/retro-check lessons)",
@@ -87,10 +90,20 @@ class RetroDailyTests(unittest.TestCase):
         self.assertFalse((self.state / "retro-failed").exists())
 
     def test_allowed_tools_string_is_exact(self):  # R7
-        self.assertEqual(self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H), EXPECTED_TOOLS)
+        self.assertEqual(self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha"), EXPECTED_TOOLS)
+        self.assertEqual(self.daily.disallowed_tools(Path("/h")), EXPECTED_DENIED)
+
+    def test_no_read_rule_covers_the_home_folder_or_a_secret_folder_and_nothing_is_unscoped(self):  # #197
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha").split(",")
+        for bare in ("Read", "Grep", "Glob"):
+            self.assertNotIn(bare, rules)
+        reads = {r for r in rules if r.startswith("Read(")}
+        self.assertEqual(len(reads), 4)
+        self.assertFalse(reads & {"Read(//h/**)", "Read(///**)", "Read(//**)", "Read(//h/.ssh/**)", "Read(//h/.aws/**)",
+                                  "Read(//h/.config/**)", "Read(//h/.config/gcloud/**)"})
 
     def test_allowed_tools_have_no_wildcard_check_no_network_scan_or_launcher_file_write(self):  # #172, #154, #192
-        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H).split(",")
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H, "/w/alpha").split(",")
         self.assertNotIn("Bash(python3 /opt/plugin/scripts/retro-check *)", rules)
         self.assertFalse([r for r in rules if r.startswith("Bash(") and "retro-check" not in r])
         for banned in ("WebFetch", "WebSearch", "mcp__", "git", "gh ", "curl", "retro-scan", "Write("):
@@ -109,8 +122,8 @@ class RetroDailyTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(cmd, ["claude", "-p", prompt, "--plugin-dir", "/opt/plugin", "--agent", "software-factory:retro",
                                "--permission-mode", "dontAsk", "--setting-sources", "project", "--strict-mcp-config",
-                               "--disallowedTools", "WebFetch,WebSearch,Agent,mcp__*",
-                               "--allowedTools", self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir)])
+                               "--disallowedTools", self.daily.disallowed_tools(Path.home()),
+                               "--allowedTools", self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir, "/w/alpha")])
         self.assertEqual(kw["cwd"], str(run_dir))
         self.assertIn(f"Scan file (already made, read it): {run_dir}/alpha.json", prompt)
         self.assertEqual(json.loads((run_dir / "due.json").read_text()), ["/w/alpha"])
@@ -129,12 +142,41 @@ class RetroDailyTests(unittest.TestCase):
         self.scan_code = 2
         code, calls = self.run_main(["/w/alpha"], [])
         self.assertEqual((code, calls), (1, []))
-        self.assertEqual((self.state / "retro-failed").read_text(), "scan-failed 2\n")
+        self.assertEqual((self.state / "retro-failed").read_text(), "scan-failed 2 alpha\n")
 
     def test_one_failing_project_does_not_stop_the_others_and_marker_holds_no_child_output(self):
         code, calls = self.run_main(["/w/alpha", "/w/beta", "/w/gamma"], [0, 3, 0])
         self.assertEqual((code, len(calls)), (1, 3))
-        self.assertEqual((self.state / "retro-failed").read_text(), "agent-failed 3\n")
+        self.assertEqual((self.state / "retro-failed").read_text(), "agent-failed 3 beta\n")
+
+    def test_slugs_are_unique_per_run_with_a_path_hash_only_on_a_collision(self):
+        slugs = self.daily.slug_map(["/a/web-app", "/b/web-app", "/c/other"])
+        self.assertEqual(slugs["/c/other"], "other")
+        self.assertEqual(len({slugs["/a/web-app"], slugs["/b/web-app"]}), 2)
+        self.assertTrue(all(slugs[p].startswith("web-app-") for p in ("/a/web-app", "/b/web-app")))
+        self.assertEqual(slugs, self.daily.slug_map(["/a/web-app", "/b/web-app", "/c/other"]))
+
+    def test_only_the_daily_cap_of_projects_run_and_the_rest_wait_for_tomorrow(self):
+        names = [f"/w/p{n}" for n in range(self.daily.MAX_PROJECTS_PER_DAY + 2)]
+        code, calls = self.run_main(names, [0] * len(names))
+        run_dir = next((self.state / "retros").iterdir())
+        self.assertEqual((code, len(calls)), (0, 5))
+        self.assertEqual(json.loads((run_dir / "due.json").read_text()), names[:5])
+
+    def test_a_due_row_without_since_is_scanned_without_the_flag(self):
+        run_dir = self.base / "run"
+        with mock.patch.object(self.daily.subprocess, "run", return_value=done()) as run:
+            self.daily.scan_project(Path("/opt/plugin"), run_dir, {"project": "/w/alpha"}, "alpha")
+        self.assertNotIn("--since", run.call_args[0][0])
+
+    def test_the_log_gets_one_separator_per_run_and_rotates_over_one_megabyte(self):
+        log = self.state / "retro.log"
+        self.state.mkdir(parents=True)
+        log.write_text("x" * (self.daily.LOG_LIMIT + 1))
+        self.daily.start_log(log)
+        self.daily.start_log(log)
+        self.assertEqual(log.with_name("retro.log.1").stat().st_size, self.daily.LOG_LIMIT + 1)
+        self.assertEqual([l[:3] for l in log.read_text().splitlines()], ["==="] * 2)
 
     def test_scan_failure_leaves_only_a_status_word_and_code(self):
         with mock.patch.object(self.daily.subprocess, "run", return_value=done(2)):
@@ -170,6 +212,14 @@ class RetroScheduleTests(unittest.TestCase):
         line = schedule.cron_line("/s/bin/retro-daily", 7, "/usr/bin:/bin")
         self.assertTrue(line.startswith("0 7 * * * "))
         self.assertTrue(line.endswith(schedule.MARKER))
+
+    def test_paths_with_a_space_are_quoted_and_the_state_folder_reaches_the_job(self):
+        schedule = load("retro-schedule")
+        line = schedule.cron_line("/my state/bin/retro-daily", 9, "/usr/bin:/bin", "/my state")
+        self.assertIn("SOFTWARE_FACTORY_HOME='/my state' ", line)
+        self.assertIn("'/my state/bin/retro-daily'", line)
+        self.assertIn("SOFTWARE_FACTORY_HOME", schedule.plist("/my state/bin/retro-daily", 9, "/usr/bin", "/l", "/my state"))
+        self.assertNotIn("SOFTWARE_FACTORY_HOME", schedule.cron_line("/s/retro-daily", 9, "/usr/bin"))
 
     def test_print_does_not_install(self):
         with tempfile.TemporaryDirectory() as home:

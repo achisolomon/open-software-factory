@@ -11,6 +11,7 @@ Stdlib only, Python 3.9+.
 import argparse
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,8 @@ def state_dir():
     return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
 
 
-def plist(launcher, hour, path_env, log):
+def plist(launcher, hour, path_env, log, home=None):
+    home_env = f"<key>SOFTWARE_FACTORY_HOME</key><string>{escape(home)}</string>" if home else ""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -33,7 +35,7 @@ def plist(launcher, hour, path_env, log):
   <key>ProgramArguments</key>
   <array><string>{escape(sys.executable)}</string><string>{escape(str(launcher))}</string></array>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>{escape(path_env)}</string></dict>
+  <dict><key>PATH</key><string>{escape(path_env)}</string>{home_env}</dict>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>{int(hour)}</integer><key>Minute</key><integer>0</integer></dict>
   <key>StandardOutPath</key><string>{escape(str(log))}</string>
@@ -43,8 +45,9 @@ def plist(launcher, hour, path_env, log):
 """
 
 
-def cron_line(launcher, hour, path_env):
-    return f"0 {int(hour)} * * * PATH={path_env} {sys.executable} {launcher} {MARKER}"
+def cron_line(launcher, hour, path_env, home=None):
+    env = f"PATH={shlex.quote(path_env)}" + (f" SOFTWARE_FACTORY_HOME={shlex.quote(home)}" if home else "")
+    return f"0 {int(hour)} * * * {env} {shlex.quote(sys.executable)} {shlex.quote(str(launcher))} {MARKER}"
 
 
 def path_env():
@@ -67,7 +70,9 @@ def install(hour, show):
     state = state_dir()
     launcher = state / "bin" / "retro-daily"
     log = state / "retro.log"
-    text = plist(launcher, hour, path_env(), log) if sys.platform == "darwin" else cron_line(launcher, hour, path_env())
+    home = os.environ.get("SOFTWARE_FACTORY_HOME")
+    text = (plist(launcher, hour, path_env(), log, home) if sys.platform == "darwin"
+            else cron_line(launcher, hour, path_env(), home))
     if show:
         print(text)
         return 0
