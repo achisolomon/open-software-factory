@@ -819,6 +819,7 @@ class HooksJsonTests(unittest.TestCase):
             ("SessionStart", "compact", "after_compact.py"),
             ("SessionStart", "startup|resume|clear", "version_check.py"),
             ("SessionStart", "startup|resume|clear", "scratch.py start"),
+            ("SessionStart", "startup|resume|clear", "retro_overlay.py"),
             ("SessionEnd", None, "scratch.py end"),
             ("UserPromptSubmit", None, "team_lead_trigger.py"),
         }
