@@ -552,6 +552,10 @@ class CheckCliTests(unittest.TestCase):
             self.publish(report=report, code=2)
         self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
 
+    def test_publish_refuses_an_eight_word_copy_wrapped_across_two_lines(self):  # N1
+        self.scan_file(review_samples=["please rename this helper before we merge it"])
+        self.publish(report=self.report("# Retro\n\nHe asked: please rename this\nhelper before we merge it today.\n"), code=2)
+
     def test_publish_takes_a_seven_word_overlap_and_a_clean_report(self):  # N1
         self.scan_file(user_messages={"correction": ["the pricing page for Dana is wrong"]})
         self.publish(report=self.report("# Retro\n\nthe pricing page for Dana is wrong today.\n"))

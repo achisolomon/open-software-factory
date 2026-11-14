@@ -395,7 +395,13 @@ def word_runs(text):
 def copied_lines(text, raw_texts):
     """Line numbers of the report that share COPY_WORDS or more words in a row with any raw text (N1)."""
     raw = set().union(*map(word_runs, raw_texts))
-    return [n for n, line in enumerate(text.splitlines(), 1) if word_runs(line) & raw]
+    words = [(n, w) for n, line in enumerate(text.splitlines(), 1) for w in overlay.squash(line).lower().split()]
+    hit = set()
+    for i in range(len(words) - COPY_WORDS + 1):  # one word stream, so a copy wrapped over two lines still matches
+        window = words[i:i + COPY_WORDS]
+        if " ".join(w for _, w in window) in raw:
+            hit.update(n for n, _ in window)
+    return sorted(hit)
 
 
 def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
