@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Retro Engine checks, and the only writer of the overlay and the retro history. Prints JSON.
+
+  retro-check apply CANDIDATES [--mode draft|auto-fix]   check each candidate entry (JSONL). In auto-fix mode an
+                                                        accepted entry goes active only when its target heading is
+                                                        in LIVE_HEADINGS; every other entry that passes waits in
+                                                        pending. Mode defaults to retro-settings.json, else draft.
+  retro-check approve ID | drop ID | retire ID          after the user's answer; approve re-checks the entry
+  retro-check verdicts --project P --metrics FILE       kept or reverted for the previous retro's changes, and
+                                                        retires reverted overlay entries
+  retro-check lessons                                   projects, changes and kept counts per lesson key
+  retro-check scrub FILE... [--strict]                  exit 1 if a file holds a home path or an email; --strict
+                                                        also flags discovered project names and private-words.txt
+  retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
+                                                        scrub the report, copy it to <P>/docs/factory/retros/ and
+                                                        append the history row
+Stdlib only, Python 3.9+.
+"""
+
+import argparse
+from datetime import datetime, timezone
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+from pathlib import Path
+import re
+import shutil
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import overlay  # noqa: E402
+
+HOME_PATH = re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+")
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+PUBLIC_NAMES = {"software-factory", "open-software-factory"}
+# The only headings an accepted entry may go live on without the user's yes (auto-fix mode): how an agent words its
+# reply or writes its code, never what it may skip or do. Compared after overlay.norm().
+LIVE_HEADINGS = frozenset(overlay.norm(h) for h in ("Reply", "Summary", "Working style", "Clean code"))
+
+
+def entries():
+    return overlay.read_jsonl(overlay.overlay_file("entries"))
+
+
+def pending():
+    return overlay.read_jsonl(overlay.overlay_file("pending"))
+
+
+def active(rows):
+    return [e for e in rows if e.get("status") == "active"]
+
+
+def may_go_live(cand):
+    target = cand.get("target")
+    return isinstance(target, dict) and overlay.norm(target.get("heading", "")) in LIVE_HEADINGS
+
+
+def cmd_apply(path, mode):
+    mode = mode or overlay.settings().get("mode") or "draft"
+    current, waiting = entries(), pending()
+    ids = {e.get("id") for e in current + waiting}
+    results = []
+    for cand in overlay.read_jsonl(path):
+        if cand.get("id") in ids:
+            results.append({"id": cand.get("id"), "verdict": "reject", "reason": "id already in use", "placed": "none"})
+            continue
+        verdict, reason = overlay.verdict(cand, active(current))
+        placed = "none"
+        if verdict != "reject":
+            e = overlay.stamp(cand)
+            if verdict == "accept" and mode == "auto-fix" and may_go_live(cand):
+                e["status"], placed = "active", "active"
+                e["went_live_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")  # for the next session's list
+                current.append(e)
+            else:
+                e["status"], e["reason"], placed = "pending", reason, "pending"
+                waiting.append(e)
+            ids.add(cand["id"])
+        results.append({"id": cand.get("id"), "verdict": verdict, "reason": reason, "placed": placed})
+    overlay.write_jsonl(overlay.overlay_file("entries"), current)
+    overlay.write_jsonl(overlay.overlay_file("pending"), waiting)
+    return results, 0
+
+
+def cmd_approve(entry_id):
+    current, waiting = entries(), pending()
+    found = [e for e in waiting if e.get("id") == entry_id]
+    if not found:
+        return {"error": f"no pending entry {entry_id}"}, 1
+    verdict, reason = overlay.verdict(found[0], active(current))
+    if verdict == "reject":  # the user's yes covers an ask, never a reject
+        return {"error": reason}, 1
+    e = overlay.stamp(found[0])
+    e["status"] = "active"
+    e.pop("reason", None)
+    overlay.write_jsonl(overlay.overlay_file("entries"), current + [e])
+    overlay.write_jsonl(overlay.overlay_file("pending"), [x for x in waiting if x.get("id") != entry_id])
+    return {"id": entry_id, "status": "active"}, 0
+
+
+def cmd_drop(entry_id):
+    waiting = pending()
+    if not any(e.get("id") == entry_id for e in waiting):
+        return {"error": f"no pending entry {entry_id}"}, 1
+    overlay.write_jsonl(overlay.overlay_file("pending"), [e for e in waiting if e.get("id") != entry_id])
+    return {"id": entry_id, "status": "dropped"}, 0
+
+
+def retire(entry_id, reason):
+    rows, done = entries(), False
+    for e in rows:
+        if e.get("id") == entry_id and e.get("status") in ("active", "stale"):
+            e["status"], e["reason"], done = "retired", reason, True
+    if done:
+        overlay.write_jsonl(overlay.overlay_file("entries"), rows)
+    return done
+
+
+def cmd_retire(entry_id):
+    if not retire(entry_id, "retired by the user"):
+        return {"error": f"no active or stale entry {entry_id}"}, 1
+    return {"id": entry_id, "status": "retired"}, 0
+
+
+def metric_value(metrics, name):
+    """A metric per session: a headline key, or 'section.key' such as 'sandbox_off.rtk gh'. None if unknown."""
+    sessions = max(1, metrics.get("sessions") or 0)
+    headline = metrics.get("headline") or {}
+    if name in headline:
+        value = headline[name]
+    else:
+        section, _, key = str(name).partition(".")
+        table = metrics.get(section)
+        if not isinstance(table, dict) or not key:
+            return None
+        value = table.get(key, 0)
+    if not isinstance(value, (int, float)):
+        return None
+    return round(value / sessions, 3)
+
+
+def cmd_verdicts(project, metrics_path):
+    rows = [r for r in overlay.read_jsonl(overlay.history_file()) if r.get("project") == project]
+    if not rows:
+        return [], 0
+    metrics = json.loads(Path(metrics_path).read_text())
+    out = []
+    for ch in rows[-1].get("changes") or []:
+        baseline = ch.get("baseline")
+        if baseline is None or not ch.get("metric"):
+            continue
+        now = metric_value(metrics, ch["metric"])
+        if now is None:
+            verdict = "unknown"
+        else:
+            verdict = "kept" if now < baseline or now == baseline == 0 else "reverted"  # lower is better for all
+        if verdict == "reverted":
+            retire(ch.get("id"), "retro: its metric did not improve")
+        out.append({"id": ch.get("id"), "metric": ch["metric"], "baseline": baseline, "now": now, "verdict": verdict})
+    return out, 0
+
+
+def cmd_lessons():
+    history = overlay.read_jsonl(overlay.history_file())
+    lesson_of, out = {}, {}
+    for row in history:
+        for ch in row.get("changes") or []:
+            if ch.get("lesson"):
+                lesson_of[ch.get("id")] = ch["lesson"]
+                item = out.setdefault(ch["lesson"], {"projects": set(), "changes": 0, "kept": 0})
+                item["projects"].add(row.get("project"))
+                item["changes"] += 1
+    for row in history:
+        for v in row.get("previous") or []:
+            if v.get("verdict") == "kept" and v.get("id") in lesson_of:
+                out[lesson_of[v["id"]]]["kept"] += 1
+    return {k: dict(v, projects=len(v["projects"])) for k, v in sorted(out.items())}, 0
+
+
+def discovered_projects():
+    spec = importlib.util.spec_from_loader("retro_scan", SourceFileLoader("retro_scan", str(Path(__file__).with_name("retro-scan"))))
+    scan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scan)
+    return [p["project"] for p in scan.discover()]
+
+
+def private_words():
+    projects = {r.get("project") for r in overlay.read_jsonl(overlay.history_file()) if r.get("project")}
+    projects.update(discovered_projects())
+    words = {Path(p).name.lower() for p in projects}
+    try:
+        words.update(w.strip().lower() for w in (overlay.state_dir() / "private-words.txt").read_text().splitlines())
+    except OSError:
+        pass
+    return sorted(w for w in words if len(w) >= 4 and w not in PUBLIC_NAMES)
+
+
+def scrub(paths, strict):
+    patterns = [HOME_PATH, EMAIL]
+    if strict:
+        patterns += [re.compile(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", re.I) for w in private_words()]
+    hits = []
+    for path in paths:
+        for n, line in enumerate(Path(path).read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            for rx in patterns:
+                hits += [{"file": str(path), "line": n, "match": m.group(0)} for m in rx.finditer(line)]
+    return hits
+
+
+def cmd_scrub(paths, strict):
+    hits = scrub(paths, strict)
+    return {"hits": hits}, 1 if hits else 0
+
+
+def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
+    hits = scrub([report], strict=False)
+    if hits:
+        return {"published": False, "hits": hits}, 1
+    metrics = json.loads(Path(metrics_path).read_text())
+    changes = json.loads(Path(changes_path).read_text())
+    verdicts = json.loads(Path(verdicts_path).read_text()) if verdicts_path else []
+    for ch in changes:
+        ch["baseline"] = metric_value(metrics, ch.get("metric", ""))
+    window = metrics.get("window") or {}
+    dest = Path(project) / "docs" / "factory" / "retros" / f"{str(window.get('until', ''))[:10]}-{sha[:7]}.md"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(report, dest)
+    history = overlay.read_jsonl(overlay.history_file())
+    history.append({"project": project, "sha": sha, "since": window.get("since"), "until": window.get("until"),
+                    "headline": metrics.get("headline"), "changes": changes, "previous": verdicts})
+    overlay.write_jsonl(overlay.history_file(), history)
+    return {"published": True, "path": str(dest)}, 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Retro Engine checks and overlay writer.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("apply")
+    p.add_argument("candidates")
+    p.add_argument("--mode", choices=("draft", "auto-fix"))
+    for name in ("approve", "drop", "retire"):
+        sub.add_parser(name).add_argument("id")
+    p = sub.add_parser("verdicts")
+    p.add_argument("--project", required=True)
+    p.add_argument("--metrics", required=True)
+    sub.add_parser("lessons")
+    p = sub.add_parser("scrub")
+    p.add_argument("files", nargs="+")
+    p.add_argument("--strict", action="store_true")
+    p = sub.add_parser("publish")
+    p.add_argument("report")
+    for flag in ("--project", "--sha", "--metrics", "--changes"):
+        p.add_argument(flag, required=True)
+    p.add_argument("--verdicts")
+    a = ap.parse_args(argv)
+    if a.cmd == "apply":
+        out, code = cmd_apply(a.candidates, a.mode)
+    elif a.cmd == "approve":
+        out, code = cmd_approve(a.id)
+    elif a.cmd == "drop":
+        out, code = cmd_drop(a.id)
+    elif a.cmd == "retire":
+        out, code = cmd_retire(a.id)
+    elif a.cmd == "verdicts":
+        out, code = cmd_verdicts(str(Path(a.project).resolve()), a.metrics)
+    elif a.cmd == "lessons":
+        out, code = cmd_lessons()
+    elif a.cmd == "scrub":
+        out, code = cmd_scrub(a.files, a.strict)
+    else:
+        out, code = cmd_publish(a.report, str(Path(a.project).resolve()), a.sha, a.metrics, a.changes, a.verdicts)
+    print(json.dumps(out, indent=1, ensure_ascii=False))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

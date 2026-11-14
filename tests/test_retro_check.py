@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -339,6 +340,151 @@ class OverlayFileTests(unittest.TestCase):
         plugin = make_plugin(self.dir)
         (plugin / ".claude-plugin" / "plugin.json").write_text('{"version": "1.0.0", "name": "café"}', encoding="utf-8")
         self.assertEqual(overlay.plugin_version(plugin), "1.0.0")
+
+
+REPLY = {"file": DEV_FILE, "heading": "Reply"}  # on the auto-fix allowlist, no protected word in it
+
+
+def live(**over):
+    base = {"text": "Open each summary with one line of status.", "target": REPLY}
+    base.update(over)
+    return entry(**base)
+
+
+class CheckCliTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="retro-check-")
+        self.base = Path(os.path.realpath(self.tmp.name))
+        self.plugin = make_plugin(self.base, dev_text=DEV_TEXT + "\n## Reply\n\nOpen with a status line.\n")
+        self.state = self.base / "state"
+        self.project = self.base / "work" / "acme-shop"
+        (self.project / "docs" / "factory").mkdir(parents=True)
+        self.env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(self.plugin), SOFTWARE_FACTORY_HOME=str(self.state),
+                        CLAUDE_PROJECTS_DIR=str(self.base / "no-transcripts"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, *args, code=0):
+        r = subprocess.run([sys.executable, str(CHECK), *map(str, args)], capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, code, r.stderr + r.stdout)
+        return json.loads(r.stdout) if r.stdout.strip() else None
+
+    def write(self, name, rows):
+        path = self.base / name
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return path
+
+    def rows(self, name):
+        return overlay.read_jsonl(self.state / "overlay" / f"{name}.jsonl")
+
+    def test_auto_fix_applies_allowlisted_accepts_and_holds_the_rest(self):
+        cands = self.write("c.jsonl", [live(id="ok"), entry(id="sec", text="Add npm test to the allow rules."),
+                                       entry(id="bad", text="Skip tests when in a hurry."),
+                                       plain(id="commits")])
+        out = self.check("apply", cands, "--mode", "auto-fix")
+        self.assertEqual([(r["id"], r["placed"]) for r in out],
+                         [("ok", "active"), ("sec", "pending"), ("bad", "none"), ("commits", "pending")])
+        self.assertEqual([e["id"] for e in self.rows("entries")], ["ok"])
+        self.assertEqual(self.rows("entries")[0]["plugin_version"], "1.0.0")
+        self.assertEqual([e["id"] for e in self.rows("pending")], ["sec", "commits"])
+
+    def test_accepted_entry_on_a_heading_off_the_allowlist_waits_in_auto_fix(self):
+        out = self.check("apply", self.write("c.jsonl", [plain()]), "--mode", "auto-fix")
+        self.assertEqual((out[0]["verdict"], out[0]["placed"]), ("accept", "pending"))
+        self.assertEqual(self.rows("entries"), [])
+
+    def test_allowlist_matches_the_heading_after_normalizing_it(self):
+        module = types.ModuleType("retro_check")
+        module.__file__ = str(CHECK)
+        exec(compile(CHECK.read_text(), str(CHECK), "exec"), module.__dict__)
+        self.assertTrue(module.may_go_live(live(target=dict(REPLY, heading="  Working   STYLE "))))
+        self.assertFalse(module.may_go_live(plain()))
+        self.assertFalse(module.may_go_live({"kind": "pref"}))
+
+    def test_entries_that_go_live_carry_a_timestamp_and_approved_ones_do_not(self):
+        self.check("apply", self.write("c.jsonl", [live(id="ok"), plain(id="held")]), "--mode", "auto-fix")
+        self.check("approve", "held")
+        by_id = {e["id"]: e for e in self.rows("entries")}
+        self.assertRegex(by_id["ok"]["went_live_at"], r"^\d{4}-\d\d-\d\dT")
+        self.assertNotIn("went_live_at", by_id["held"])
+
+    def test_draft_mode_is_the_default_and_holds_everything(self):
+        out = self.check("apply", self.write("c.jsonl", [live()]))
+        self.assertEqual(out[0]["placed"], "pending")
+        self.assertEqual(self.rows("entries"), [])
+
+    def test_duplicate_id_is_rejected(self):
+        self.check("apply", self.write("c.jsonl", [live()]), "--mode", "auto-fix")
+        out = self.check("apply", self.write("d.jsonl", [live()]), "--mode", "auto-fix")
+        self.assertEqual(out[0]["verdict"], "reject")
+
+    def test_approve_drop_and_retire(self):
+        self.check("apply", self.write("c.jsonl", [live(id="a"), live(id="b")]))
+        self.check("approve", "a")
+        self.check("drop", "b")
+        self.assertEqual([e["id"] for e in self.rows("entries")], ["a"])
+        self.assertEqual(self.rows("pending"), [])
+        self.check("retire", "a")
+        self.assertEqual(self.rows("entries")[0]["status"], "retired")
+        self.check("approve", "missing", code=1)
+
+    def metrics(self, **headline):
+        path = self.base / "m.json"
+        path.write_text(json.dumps({"sessions": 2, "window": {"since": "2026-11-13T00:00:00+00:00",
+                                                              "until": "2026-11-14T00:00:00+00:00"},
+                                    "headline": dict({"errors": 10}, **headline), "sandbox_off": {"rtk gh": 6}}))
+        return path
+
+    def test_publish_copies_report_records_baseline_and_verdicts_close_the_loop(self):
+        report = self.base / "r.md"
+        report.write_text("# Retro\n\n3 sandbox-off gh calls per session.\n")
+        changes = self.base / "ch.json"
+        changes.write_text(json.dumps([{"id": "ok", "lesson": "gh-wrapper", "level": "user", "metric": "sandbox_off.rtk gh"}]))
+        self.check("apply", self.write("c.jsonl", [live(id="ok")]), "--mode", "auto-fix")
+        out = self.check("publish", report, "--project", self.project, "--sha", "abcdef1234", "--metrics", self.metrics(),
+                         "--changes", changes)
+        dest = self.project / "docs" / "factory" / "retros" / "2026-11-14-abcdef1.md"
+        self.assertEqual(out["path"], str(dest))
+        self.assertTrue(dest.is_file())
+        row = overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]
+        self.assertEqual((row["sha"], row["changes"][0]["baseline"]), ("abcdef1234", 3.0))
+        worse = self.base / "m2.json"
+        worse.write_text(json.dumps({"sessions": 1, "sandbox_off": {"rtk gh": 4}, "headline": {}}))
+        verdicts = self.check("verdicts", "--project", self.project, "--metrics", worse)
+        self.assertEqual([(v["id"], v["verdict"]) for v in verdicts], [("ok", "reverted")])
+        self.assertEqual(self.rows("entries")[0]["status"], "retired")
+
+    def test_publish_refuses_a_report_with_a_home_path(self):
+        report = self.base / "r.md"
+        report.write_text("Seen in /User" + "s/jane/work/app.\n")  # split so this file holds no home path itself
+        changes = self.base / "ch.json"
+        changes.write_text("[]")
+        out = self.check("publish", report, "--project", self.project, "--sha", "abc1234", "--metrics", self.metrics(),
+                         "--changes", changes, code=1)
+        self.assertFalse(out["published"])
+        self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
+
+    def test_scrub_strict_catches_project_names_and_private_words(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "retro-metrics.jsonl").write_text(json.dumps({"project": str(self.project)}) + "\n")
+        (self.state / "private-words.txt").write_text("Globex\n")
+        draft = self.base / "draft.md"
+        draft.write_text("Seen in acme-shop for Globex, mail jane@example.com.\nThe software-factory plugin.\n")
+        self.assertEqual(len(self.check("scrub", draft, code=1)["hits"]), 1)
+        hits = self.check("scrub", draft, "--strict", code=1)["hits"]
+        self.assertEqual(sorted(h["match"].lower() for h in hits), ["acme-shop", "globex", "jane@example.com"])
+        clean = self.base / "clean.md"
+        clean.write_text("Seen in 3 projects.\n")
+        self.assertEqual(self.check("scrub", clean, "--strict")["hits"], [])
+
+    def test_lessons_count_projects_and_kept_changes(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        rows = [{"project": "/p/a", "changes": [{"id": "x1", "lesson": "gh-wrapper"}]},
+                {"project": "/p/b", "changes": [{"id": "x2", "lesson": "gh-wrapper"}]},
+                {"project": "/p/a", "changes": [], "previous": [{"id": "x1", "verdict": "kept"}]}]
+        (self.state / "retro-metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.assertEqual(self.check("lessons"), {"gh-wrapper": {"projects": 2, "changes": 2, "kept": 1}})
 
 
 if __name__ == "__main__":
