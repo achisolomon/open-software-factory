@@ -20,7 +20,11 @@
   retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
                                                         scrub the report (strict, minus P's own name), write it to
                                                         <P>/docs/factory/retros/ and append the history row. REPORT
-                                                        must sit in <state>/retros/
+                                                        must sit in <state>/retros/<day>/ next to a due.json (list of
+                                                        due project paths) that names P. Refused (exit 2) when a change
+                                                        lesson is not [a-z0-9-]{1,40}, or when the report shares 8+
+                                                        words in a row with a raw user message or PR comment sample in
+                                                        a scan *.json in that folder
 Exit codes: 0 done or clean, 1 a check said no (hits, refused entry), 2 bad input or not allowed.
 Stdlib only, Python 3.9+.
 """
@@ -71,6 +75,9 @@ REVIEW_HEADING = re.compile(r"^#{1,6}\s.*review", re.I | re.M)
 SHA = re.compile(r"[0-9a-f]{7,40}")
 USER_ONLY = ("approve", "drop", "retire")
 HEADLESS_ENV = "RETRO_HEADLESS"
+LESSON_KEY = re.compile(r"[a-z0-9-]{1,40}")
+DUE_FILE = "due.json"  # the launcher lists the due project paths here, next to the report
+COPY_WORDS = 8  # a report may not share this many words in a row with raw scan text
 
 
 class CheckError(Exception):
@@ -355,6 +362,42 @@ def write_atomically(dest, data):
         raise
 
 
+def checked_project(report, project):
+    """CheckError unless project is in the run's due.json (a JSON list of project paths) next to the report."""
+    due = load_json(Path(report).parent / DUE_FILE, list)
+    if project not in {str(Path(p).resolve()) for p in due if isinstance(p, str)}:
+        raise CheckError(f"{project} is not in {DUE_FILE} for this run")
+
+
+def raw_scan_texts(run_dir):
+    """Every raw user message and PR comment sample held by the scan files (*.json) in the run folder."""
+    texts = []
+    for path in sorted(Path(run_dir).glob("*.json")):
+        try:
+            scan = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(scan, dict):
+            continue
+        messages = scan.get("user_messages")
+        for group in messages.values() if isinstance(messages, dict) else []:
+            texts += [t for t in group if isinstance(t, str)] if isinstance(group, list) else []
+        samples = scan.get("review_samples")
+        texts += [t for t in samples if isinstance(t, str)] if isinstance(samples, list) else []
+    return texts
+
+
+def word_runs(text):
+    words = overlay.squash(text).lower().split()
+    return {" ".join(words[i:i + COPY_WORDS]) for i in range(len(words) - COPY_WORDS + 1)}
+
+
+def copied_lines(text, raw_texts):
+    """Line numbers of the report that share COPY_WORDS or more words in a row with any raw text (N1)."""
+    raw = set().union(*map(word_runs, raw_texts))
+    return [n for n, line in enumerate(text.splitlines(), 1) if word_runs(line) & raw]
+
+
 def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
     if not SHA.fullmatch(sha):
         raise CheckError("--sha must be 7 to 40 lowercase hex characters")
@@ -365,7 +408,13 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
     verdicts = load_json(verdicts_path, list) if verdicts_path else []
     if not all(isinstance(c, dict) for c in changes + verdicts):
         raise CheckError("changes and verdicts must be lists of objects")
-    data = checked_source(report).read_bytes()  # read once: what is scrubbed is what is written
+    source = checked_source(report)
+    checked_project(report, project)
+    bad = [c["lesson"] for c in changes if "lesson" in c
+           and not (isinstance(c["lesson"], str) and LESSON_KEY.fullmatch(c["lesson"]))]
+    if bad:
+        raise CheckError(f"lesson keys must match [a-z0-9-]{{1,40}}, got {bad!r}")
+    data = source.read_bytes()  # read once: what is scrubbed is what is written
     try:
         text = data.decode("utf-8")
     except ValueError as err:
@@ -373,6 +422,9 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
     hits = scrub_text(report, text, scrub_patterns(strict=True, own_project=project))
     if hits:
         return {"published": False, "hits": hits}, 1
+    copied = copied_lines(text, raw_scan_texts(Path(report).parent))
+    if copied:
+        raise CheckError(f"the report copies {COPY_WORDS}+ words of raw scan text on lines {copied}")
     retros = checked_retros_dir(project)
     dest = retros / f"{date}-{sha[:7]}.md"
     if dest.is_symlink() or dest.resolve().parent != retros.resolve():

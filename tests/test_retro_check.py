@@ -537,7 +537,40 @@ class CheckCliTests(unittest.TestCase):
         path = self.state / "retros" / "r.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+        (path.parent / "due.json").write_text(json.dumps([str(self.project)]))
         return path
+
+    def scan_file(self, **fields):
+        (self.state / "retros").mkdir(parents=True, exist_ok=True)
+        (self.state / "retros" / "acme.json").write_text(json.dumps(fields))
+
+    def test_publish_refuses_a_report_copying_eight_words_of_raw_text(self):  # N1
+        self.scan_file(user_messages={"correction": ["no, the pricing page for Dana is wrong again today ok"]},
+                       review_samples=["please rename this helper before we merge it"])
+        for text in ("Dana: the pricing page for Dana is wrong again today", "He asked: please rename this helper before we merge it today"):
+            report = self.report(f"# Retro\n\n{text}.\n")
+            self.publish(report=report, code=2)
+        self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
+
+    def test_publish_takes_a_seven_word_overlap_and_a_clean_report(self):  # N1
+        self.scan_file(user_messages={"correction": ["the pricing page for Dana is wrong"]})
+        self.publish(report=self.report("# Retro\n\nthe pricing page for Dana is wrong today.\n"))
+        self.publish(report=self.report("# Retro\n\n3 sandbox-off gh calls per session.\n"))
+
+    def test_publish_refuses_a_lesson_key_outside_the_allowed_form(self):  # F5
+        for bad in ("../x", "Gh_Wrapper", "", "a" * 41, 7):
+            changes = self.changes([{"id": "c1", "lesson": bad}])
+            self.assertIn("lesson", self.publish(changes=changes, code=2)["error"])
+        self.publish(changes=self.changes([{"id": "c1", "lesson": "gh-wrapper-2"}]))
+
+    def test_publish_refuses_a_project_not_in_due_json(self):  # F6
+        other = self.base / "work" / "other-app"
+        (other / "docs" / "factory").mkdir(parents=True)
+        self.assertIn("due.json", self.publish(project=other, code=2)["error"])
+        report = self.report()
+        (report.parent / "due.json").unlink()
+        self.assertIn("due.json", self.publish(report=report, code=2)["error"])
+        self.assertFalse((other / "docs" / "factory" / "retros").exists())
 
     def changes(self, rows=()):
         path = self.base / "ch.json"
@@ -789,7 +822,9 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual(list(elsewhere.iterdir()), [])
         bare = self.base / "work" / "bare"
         bare.mkdir()
-        self.assertIn("docs/factory", self.publish(project=bare, code=2)["error"])
+        report = self.report()
+        (report.parent / "due.json").write_text(json.dumps([str(bare)]))
+        self.assertIn("docs/factory", self.publish(report=report, project=bare, code=2)["error"])
 
     def test_publish_refuses_a_report_outside_the_state_retros_folder_or_a_symlink(self):  # #173
         outside = self.base / "r.md"
