@@ -897,5 +897,27 @@ class CheckCliTests(unittest.TestCase):
         self.assertIsNone(overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]["changes"][0]["baseline"])
 
 
+class RetroAgentFileTests(unittest.TestCase):
+    def setUp(self):
+        self.text = (ROOT / "agents" / "retro.md").read_text()
+
+    def test_agent_hands_every_write_to_the_scripts(self):
+        self.assertIn("model: sonnet", self.text)
+        for needle in ("retro-scan --project", "retro-check apply", "retro-check publish", "retro-check verdicts",
+                       "retro-check scrub", "Never write the overlay files yourself"):
+            self.assertIn(needle, self.text)
+        self.assertNotIn("—", self.text)
+
+    def test_agent_has_the_tools_the_spike_found_it_needs(self):
+        tools = next(line for line in self.text.splitlines() if line.startswith("tools:"))
+        self.assertIn("Write", tools)
+        self.assertIn("Bash", tools)
+
+    def test_agent_never_runs_the_user_only_subcommands(self):
+        for needle in ("never run `retro-check approve`", "`drop`", "`retire`", "Nothing goes live by itself",
+                       "you write only inside it", "`retro-settings.json`", "`retro-failed`"):
+            self.assertIn(needle.lower(), self.text.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

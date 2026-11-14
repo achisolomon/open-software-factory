@@ -22,6 +22,7 @@ AGENT_DISPLAY_NAMES = {
     "security-engineer": "Security Engineer",
     "ux-ui-designer": "UX/UI Designer",
     "performance-engineer": "Performance Engineer",
+    "retro": "Retro",
 }
 
 

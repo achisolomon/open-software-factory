@@ -16,7 +16,7 @@ A real run on [aitoolreview.ai](https://aitoolreview.ai): the Team Lead dispatch
 
 https://github.com/user-attachments/assets/8dabfe4a-e521-4b5e-9639-d8af3ca6259e
 
-The agents are checked too: 31 behavior evals and 287 offline tests guard their rules and approval gates.
+The agents are checked too: 31 behavior evals and 290 offline tests guard their rules and approval gates.
 
 ## What you get
 
@@ -27,7 +27,7 @@ The agents are checked too: 31 behavior evals and 287 offline tests guard their 
 
 ## Meet the team
 
-13 agents, what each one does and the model it runs on:
+14 agents, what each one does and the model it runs on:
 
 | Agent | Model | What it does |
 |---|---|---|
@@ -44,6 +44,7 @@ The agents are checked too: 31 behavior evals and 287 offline tests guard their 
 | **Security Engineer** | Opus | Threat model (STRIDE), security requirements (ASVS), security reviews and scans, final release gate |
 | **UX/UI Designer** | Sonnet | User flows, textual screen specs and design tokens, usability and accessibility (WCAG 2.2 AA) reviews of UI changes, final UX gate |
 | **Performance Engineer** | Opus | Load tester and sizing expert: finds what breaks under load (missing indexes, N+1, deadlocks, pool limits), sizes the system against the NFRs, plans and runs load tests. Runs before a merge to main or a deploy, and when you ask, not per task |
+| **Retro** | Sonnet | Once a day, for each factory project whose main moved, reads the sessions (errors, approval prompts, time per task, your corrections) and drafts at most 2 fixes for the causes as your own lessons, which wait for your yes. Lessons seen in 3+ projects become a draft change to the plugin. Runs on your machine; your messages never leave it |
 
 Read-only lookups run on Haiku. To change the policy, see [Tips](#tips).
 
