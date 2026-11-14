@@ -1,6 +1,7 @@
 """Tests for scripts/retro-scan on fixture transcripts."""
 
 import ast
+import datetime
 import importlib.machinery
 import importlib.util
 import json
@@ -98,6 +99,16 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(found[0]["sessions"], 2)
         self.assertEqual(found[0]["worktrees"], [worktree])
 
+    def test_only_sessions_from_the_last_30_days_count_and_last_active_is_the_newest(self):
+        repo, newest = str(self.f.repo), int(NOW) - 1000
+        for age in (newest, NOW - 20 * DAY, NOW - 40 * DAY):
+            path = self.f.session(repo, [user("go", NOW - 100, repo)])
+            os.utime(path, (age, age))
+        found = self.f.run("--discover")
+        self.assertEqual(found[0]["sessions"], 2)
+        self.assertEqual(found[0]["last_active"], datetime.datetime.fromtimestamp(
+            newest, datetime.timezone.utc).isoformat(timespec="seconds"))
+
 
 class MeasureTests(unittest.TestCase):
     def setUp(self):
@@ -173,6 +184,53 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(m["github"]["merged_prs"], 1)
         self.assertEqual(m["github"]["review_comments"], 2)
         self.assertEqual((m["github"]["ci_runs"], m["github"]["ci_failed"], m["github"]["ci_median_min"]), (1, 1, 10.0))
+
+    def test_approvals_ask_rule_writes_error_share_and_message_filters(self):
+        self.f.state.mkdir(parents=True)
+        (self.f.state / "settings.json").write_text(json.dumps({"permissions": {"ask": ["Bash(git push:*)"]}}))
+        r, t = self.repo, NOW - 1800
+        rows = [
+            user("no, stop that", t, r),
+            user("no " + "x" * 700, t + 1, r),
+            user("<command-message>no, stop</command-message>", t + 2, r),
+            bash("a", "git push origin feature/x", t + 3, r),
+            result("a", "The user doesn't want to proceed with this tool use", t + 4, r),
+            bash("b", "ls", t + 5, r),
+            result("b", "Permission denied by auto mode classifier", t + 6, r),
+        ]
+        dev = {"agentType": "software-factory:software-developer", "model": "sonnet"}
+        sub_rows = [user("no, stop it", t, r), bash("s", "npm test", t + 7, r), result("s", "FAIL a.test.ts", t + 8, r)]
+        self.f.session(r, rows, subagents=[(dev, sub_rows)])
+        m = self.measure()
+        self.assertEqual(m["approvals"], {"user-rejected": 1, "classifier-denied": 1})
+        self.assertEqual(m["gh_writes"], {"ask-rule": 1})
+        self.assertEqual(m["subagent_error_share"], 0.33)
+        self.assertEqual(m["user_message_counts"], {"correction": 1})
+
+    def test_ci_runs_that_started_before_the_window_are_not_counted(self):
+        bin_dir = self.f.base / "bin"
+        bin_dir.mkdir()
+        runs = [{"createdAt": iso(NOW - 7200), "updatedAt": iso(NOW - 7000), "conclusion": "failure"},
+                {"createdAt": iso(NOW - 900), "updatedAt": iso(NOW - 300), "conclusion": "success"}]
+        (bin_dir / "gh").write_text(f"#!/bin/sh\nif [ \"$1\" = pr ]; then echo '[]'; else echo '{json.dumps(runs)}'; fi\n")
+        (bin_dir / "gh").chmod(0o755)
+        self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        m = self.f.run("--project", self.repo, "--since", iso(NOW - 3600), PATH=f"{bin_dir}:{os.environ['PATH']}")
+        self.assertEqual((m["github"]["ci_runs"], m["github"]["ci_failed"]), (1, 0))
+
+    def test_an_invalid_since_is_a_usage_error(self):
+        r = subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--since", "last week"],
+                           capture_output=True, text=True, env=self.f.env())
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--since is not an ISO time: last week", r.stderr)
+
+    def test_out_writes_the_json_to_the_file_and_prints_its_path(self):
+        self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        out = self.f.base / "nested" / "m.json"
+        r = subprocess.run([sys.executable, str(SCRIPT), "--project", self.repo, "--since", iso(NOW - 3600),
+                            "--no-github", "--out", str(out)], capture_output=True, text=True, env=self.f.env())
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, str(out)))
+        self.assertEqual(json.loads(out.read_text())["project"], self.repo)
 
     def test_github_failure_is_reported_not_fatal(self):
         bin_dir = self.f.base / "bin"
@@ -271,6 +329,22 @@ class RobustnessTests(unittest.TestCase):
             os.utime(sub, (old, old))
         self.assertEqual(self.measure()["dispatches"], {})
 
+    def test_rows_after_the_until_bound_are_left_out(self):
+        r = self.repo
+        self.f.session(r, [user("no, stop", NOW - 100, r), user("no, wrong", NOW - 10, r)])
+        m = self.scan.measure(r, NOW - 3600, until=NOW - 50, with_github=False)
+        self.assertEqual(m["user_message_counts"], {"correction": 1})
+
+    def test_messages_of_subagent_logs_are_not_collected(self):
+        path = self.f.session(self.repo, [user("no, stop", NOW - 100, self.repo)])
+        self.assertEqual(self.scan.scan_file(path, 0, NOW + 1, sub=True)["messages"], [])
+        self.assertEqual(self.scan.scan_file(path, 0, NOW + 1)["messages"], ["no, stop"])
+
+    def test_p90_picks_the_value_at_ninety_percent_and_clamps_to_the_last(self):
+        self.assertEqual((self.scan.p90(list(range(1, 11))), self.scan.p90([5])), (10, 5))
+        runs = [{"model": "m", "minutes": n, "calls": 1, "errors": 0} for n in range(1, 11)]
+        self.assertEqual(self.scan.dispatch_table({"a": runs})["a"]["p90_min"], 10.0)
+
     def test_due_scans_transcripts_once_for_all_projects(self):
         other = self.f.base / "work" / "other"
         (other / "docs" / "factory").mkdir(parents=True)
@@ -336,6 +410,28 @@ class DueTests(unittest.TestCase):
         (self.f.state / "retro-metrics.jsonl").write_text(
             json.dumps({"project": r, "sha": self.sha, "until": iso(NOW - 3600)}) + "\n")
         self.assertEqual(self.f.run("--due"), [])
+
+    def record_retro(self, until):
+        self.f.state.mkdir(parents=True, exist_ok=True)
+        (self.f.state / "retro-metrics.jsonl").write_text(
+            json.dumps({"project": self.repo, "sha": "older-sha", "until": iso(until)}) + "\n")
+
+    def session_aged(self, t):
+        path = self.f.session(self.repo, [user("go", NOW - 100, self.repo)])
+        os.utime(path, (t, t))
+
+    def test_sessions_from_before_the_last_retro_do_not_count(self):
+        self.record_retro(NOW - 3600)
+        self.session_aged(NOW - 7200)
+        self.session_aged(NOW - 50)
+        self.assertEqual(self.f.run("--due"), [])
+
+    def test_a_session_after_an_old_retro_is_still_found(self):
+        self.record_retro(NOW - 45 * DAY)
+        self.session_aged(NOW - 40 * DAY)
+        self.session_aged(NOW - 50)
+        due = self.f.run("--due")
+        self.assertEqual([(d["project"], d["sessions"]) for d in due], [(self.repo, 2)])
 
 
 if __name__ == "__main__":
