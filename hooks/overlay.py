@@ -5,8 +5,9 @@ user's yes). <state> is $SOFTWARE_FACTORY_HOME or ~/.software-factory. Shared by
 scripts/retro-scan and scripts/retro-check. Stdlib only, Python 3.9+.
 
 An entry row holds: id, kind, class, role, text, evidence, target, status, reason, plugin_version, anchor_sha and
-went_live_at (ISO time the entry became active, set by scripts/retro-check both for an auto-fix entry and for one the
-user approved, so the next session can list what went live and offer to revert it).
+went_live_at (ISO time the entry became active, set by scripts/retro-check for an entry the user approved, so the next
+session can list what went live and offer to revert it). Auto-fix is kept in the code for a later release; setup writes
+draft mode and the live-heading list is empty, so nothing goes live on its own.
 
 The entry check fails closed: an entry that is not plainly harmless waits for the user's yes, and a keyword list only
 decides which of those is rejected outright. Entry text is untrusted (it comes from transcripts and issue text).

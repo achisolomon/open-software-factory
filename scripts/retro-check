@@ -3,16 +3,18 @@
 
   retro-check apply CANDIDATES [--mode draft]           check each candidate entry (JSONL). Mode comes from
                                                         retro-settings.json (default draft); the flag can only lower
-                                                        it to draft. In auto-fix mode an accepted entry goes active
-                                                        only when may_go_live() allows it; every other entry that
-                                                        passes waits in pending. Corrupt lines come back as rejects.
+                                                        it to draft. Setup writes draft, so every entry that passes
+                                                        waits in pending. The auto-fix path (may_go_live(), empty
+                                                        LIVE_HEADINGS) is kept for a later release and applies
+                                                        nothing. Corrupt lines come back as rejects.
   retro-check check ENTRY.json                          one JSON line {id, verdict, reason} for one entry (id, kind, class,
                                                         role, text, evidence, target). Exit 0 accept, 1 reject or ask,
                                                         2 bad file. Read-only, so it also runs when RETRO_HEADLESS=1
   retro-check approve ID | drop ID | retire ID          after the user's answer. Refuse (exit 2) when RETRO_HEADLESS=1,
                                                         which the headless launcher sets. approve re-checks the entry
   retro-check verdicts --project P --metrics FILE       kept, reverted or unknown for the previous retro's changes;
-                                                        retires reverted entries that went live on their own (auto)
+                                                        retires reverted entries that went live on their own (auto);
+                                                        a reverted approved entry gets action ask-retire (user decides)
   retro-check lessons                                   projects, changes and kept counts per lesson key
   retro-check repair                                    rewrite entries.jsonl and pending.jsonl from their valid
                                                         rows; a file with bad lines is copied to *.corrupt-<time>
