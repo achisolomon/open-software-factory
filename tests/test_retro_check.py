@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+from importlib.machinery import SourceFileLoader
 import json
 import os
 from pathlib import Path
@@ -527,7 +528,7 @@ class CheckCliTests(unittest.TestCase):
 
     @property
     def run_dir(self):
-        return self.state / "retros" / "2026-11-14"
+        return self.state / "retros" / "2026-11-14" / "acme"  # one folder per project (#200)
 
     def metrics(self, scan_of=None, **headline):
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -545,9 +546,36 @@ class CheckCliTests(unittest.TestCase):
         (self.run_dir / "due.json").write_text(json.dumps([str(self.project)]))
         return path
 
-    def scan_file(self, **fields):
+    def scan_file(self, review_samples=(), **fields):
+        """A scan file in the layout retro-scan writes: PR comment samples sit under github (#199)."""
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        (self.run_dir / "acme.json").write_text(json.dumps(fields))
+        (self.run_dir / "acme.json").write_text(json.dumps(dict(fields, github={"review_samples": list(review_samples)})))
+
+    def test_the_copy_check_reads_the_samples_retro_scan_really_writes(self):  # #199
+        loader = SourceFileLoader("retro_scan", str(ROOT / "scripts" / "retro-scan"))
+        scan = types.ModuleType("retro_scan")
+        scan.__file__ = loader.path
+        loader.exec_module(scan)
+        prs = [{"number": 1, "reviews": [{"body": "please rename this helper before we merge it"}], "comments": []}]
+        with mock.patch.object(scan, "gh", side_effect=[prs, []]):
+            written = {"project": str(self.project), "github": scan.github(str(self.project), 0)}
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "acme.json").write_text(json.dumps(written))
+        self.assertEqual(load_check().raw_scan_texts(self.run_dir), ["please rename this helper before we merge it"])
+        copy = self.report("# Retro\n\nHe asked: please rename this helper before we merge it today.\n")
+        self.assertIn("copies", self.publish(report=copy, code=2)["error"])
+
+    def test_a_project_folder_cannot_publish_or_verdict_for_an_earlier_project(self):  # #200
+        earlier = self.base / "work" / "other-app"
+        (earlier / "docs" / "factory").mkdir(parents=True)
+        mine = self.report()
+        theirs = self.state / "retros" / "2026-11-14" / "other-app"
+        (theirs / "work").mkdir(parents=True)
+        (theirs / "due.json").write_text(json.dumps([str(earlier)]))
+        (theirs / "m.json").write_text(json.dumps({"project": str(earlier), "window": {"until": "2026-11-14"}}))
+        self.assertIn("--metrics", self.publish(report=mine, project=earlier, metrics=theirs / "m.json", code=2)["error"])
+        self.assertIn("due.json", self.publish(report=mine, project=earlier, code=2)["error"])
+        self.assertFalse((earlier / "docs" / "factory" / "retros").exists())
 
     def test_publish_cannot_be_defeated_from_the_agent_folder(self):  # #192, Test's bypass cases
         other = self.base / "work" / "other-app"

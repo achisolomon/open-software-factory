@@ -60,12 +60,14 @@ class WriteOutsideProjectTests(LeakTestCase):
     def test_allows_only_the_retro_work_and_upstream_folders_of_the_state(self):
         state = self.parent / "state"
         self.env["SOFTWARE_FACTORY_HOME"] = str(state)
-        self.assertIsNone(self.write(state / "retros" / "2026-11-14" / "work" / "report.md"))
+        run = state / "retros" / "2026-11-14" / "app"
+        self.assertIsNone(self.write(run / "work" / "report.md"))
         self.assertIsNone(self.write(state / "upstream" / "lesson.md"))
-        for refused in (state / "overlay" / "entries.jsonl", state / "retros" / "2026-11-14" / "due.json",
-                        state / "retros" / "2026-11-14" / "app.json", state / "retro-failed",
-                        state / "retros" / "2026-11-14" / "work",  # the folder itself is not a file
-                        state / "retros" / "2026-11-14" / "work" / ".." / "due.json",
+        for refused in (state / "overlay" / "entries.jsonl", run / "due.json",
+                        run / "app.json", state / "retro-failed",
+                        state / "retros" / "2026-11-14" / "work" / "report.md",  # the old shared folder (#200)
+                        run / "work",  # the folder itself is not a file
+                        run / "work" / ".." / "due.json",
                         state / "upstream" / ".." / "overlay" / "entries.jsonl"):
             self.assertIsNotNone(self.write(refused), refused)
 
@@ -73,7 +75,7 @@ class WriteOutsideProjectTests(LeakTestCase):
         state = self.parent / "state"
         self.env["SOFTWARE_FACTORY_HOME"] = str(state)
         (state / "overlay").mkdir(parents=True)
-        work = state / "retros" / "2026-11-14" / "work"
+        work = state / "retros" / "2026-11-14" / "app" / "work"
         work.mkdir(parents=True)
         (work / "link").symlink_to(state / "overlay")
         self.assertIsNotNone(self.write(work / "link" / "entries.jsonl"))

@@ -23,13 +23,14 @@ HARNESS_SCRATCHPAD = re.compile(r"^/private/tmp/claude-\d+/[^/]+/[0-9a-f-]{36}/s
 
 
 def retro_state_folder(real):
-    """True for <state>/retros/<day>/work/** and <state>/upstream/** only (#198); due.json, scans and overlay/ stay
-    launcher-owned. real is already resolved, and so is the state folder, so `..` and symlinks cannot escape."""
+    """True for <state>/retros/<day>/<slug>/work/** and <state>/upstream/** only (#198, #200); due.json, scans and
+    overlay/ stay launcher-owned. real is already resolved, and so is the state folder, so `..` and symlinks cannot
+    escape."""
     state = Path(os.path.realpath(overlay.state_dir()))
     if state / "upstream" in real.parents:
         return True
     parts = real.relative_to(state).parts if state in real.parents else ()
-    return len(parts) >= 4 and parts[0] == "retros" and parts[2] == "work"
+    return len(parts) >= 5 and parts[0] == "retros" and parts[3] == "work"
 
 
 def outside(path, root, cwd):

@@ -20,9 +20,9 @@
   retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
                                                         scrub the report (strict, minus P's own name), write it to
                                                         <P>/docs/factory/retros/ and append the history row. REPORT
-                                                        must sit in <state>/retros/<day>/work/. The run folder above
-                                                        it holds the launcher's due.json (list of due project paths)
-                                                        that names P, and the scan file that --metrics must be.
+                                                        must sit in <state>/retros/<day>/<slug>/work/. The project
+                                                        folder above it holds the launcher's due.json (P only) and
+                                                        the scan file that --metrics must be.
                                                         Refused (exit 2) when a change
                                                         lesson is not [a-z0-9-]{1,40}, or when the report shares 8+
                                                         words in a row with a raw user message or PR comment sample in
@@ -339,18 +339,19 @@ def checked_source(report):
         raise CheckError(f"{report} is a symlink")
     allowed = (overlay.state_dir() / "retros").resolve()
     real = src.resolve()
-    if not src.is_file() or real.parent.name != WORK_DIR or real.parent.parent.parent != allowed:
-        raise CheckError(f"the report must be a file in {allowed}/<day>/{WORK_DIR}/")
+    if not src.is_file() or real.parent.name != WORK_DIR or real.parent.parent.parent.parent != allowed:
+        raise CheckError(f"the report must be a file in {allowed}/<day>/<slug>/{WORK_DIR}/")
     return src
 
 
 def checked_metrics(metrics_path, run_dir=None):
-    """The metrics, when the file is a scan file directly in a run folder <state>/retros/<day>/ (the given one, if any),
-    which the agent cannot write."""
+    """The metrics, when the file is a scan file directly in a project's run folder <state>/retros/<day>/<slug>/ (the
+    given one, if any), which the agent cannot write."""
     path = Path(metrics_path)
     folder = path.resolve().parent
-    if path.is_symlink() or folder.parent != (overlay.state_dir() / "retros").resolve() or run_dir not in (None, folder):
-        raise CheckError(f"--metrics must be a scan file directly in {run_dir or 'a run folder under <state>/retros'}")
+    if (path.is_symlink() or folder.parent.parent != (overlay.state_dir() / "retros").resolve()
+            or run_dir not in (None, folder)):
+        raise CheckError(f"--metrics must be a scan file directly in {run_dir or 'a run folder <state>/retros/<day>/<slug>'}")
     return load_json(path, dict)
 
 
@@ -403,8 +404,10 @@ def raw_scan_texts(run_dir):
         messages = scan.get("user_messages")
         for group in messages.values() if isinstance(messages, dict) else []:
             texts += [t for t in group if isinstance(t, str)] if isinstance(group, list) else []
-        samples = scan.get("review_samples")
-        texts += [t for t in samples if isinstance(t, str)] if isinstance(samples, list) else []
+        github = scan.get("github")  # retro-scan writes the PR comment samples here (#199); the top level is kept too
+        for holder in (scan, github if isinstance(github, dict) else {}):
+            samples = holder.get("review_samples")
+            texts += [t for t in samples if isinstance(t, str)] if isinstance(samples, list) else []
     return texts
 
 

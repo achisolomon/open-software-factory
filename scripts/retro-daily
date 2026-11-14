@@ -2,10 +2,11 @@
 """Daily retro launcher, started by launchd or cron (see retro-schedule). The model runs only when a project is due.
 
 Finds the newest installed plugin copy (the cache path changes with every update), runs retro-scan --due, writes the due
-project paths to <state>/retros/<today>/due.json (retro-check publish reads it), runs retro-scan itself for each due
-project into the same folder, and starts one headless Retro run per project, so one failing project does not stop the
-others. At most MAX_PROJECTS_PER_DAY run a day; the rest stay due for the next day. The agent may write only <run>/work/
-and <state>/upstream/; the launcher's files are out of its reach (#192). A failure leaves <state>/retro-failed, which
+project path to <state>/retros/<today>/<slug>/due.json (retro-check publish reads it), runs retro-scan itself into
+that folder, and starts one headless Retro run per project, so one failing project does not stop the others. Each
+project has its own folder, so a run reads and publishes for its own project only (#200). At most MAX_PROJECTS_PER_DAY
+run a day; the rest stay due for the next day. The agent may write only <folder>/work/ and <state>/upstream/; the
+launcher's files are out of its reach (#192). A failure leaves <state>/retro-failed, which
 holds only fixed status words, an exit code and a project slug, never child output (the full output is in
 <state>/retro.log). Stdlib only, Python 3.9+.
 """
@@ -81,6 +82,14 @@ def slug_map(projects):
     names = list(base.values())
     return {p: s if names.count(s) == 1 else f"{s[:10]}-{hashlib.sha256(p.encode()).hexdigest()[:5]}"
             for p, s in base.items()}
+
+
+def project_folder(day_dir, project, slug):
+    """<day>/<slug>/ with a due.json that lists this project only, so one run cannot read or publish for another (#200)."""
+    folder = day_dir / slug
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "due.json").write_text(json.dumps([project["project"]]) + "\n", encoding="utf-8")
+    return folder
 
 
 def fail(state, words):
@@ -180,13 +189,12 @@ def main():
     if not due:
         return 0
     due = due[:MAX_PROJECTS_PER_DAY]
-    run_dir = state / "retros" / datetime.date.today().isoformat()
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "due.json").write_text(json.dumps([d["project"] for d in due]) + "\n", encoding="utf-8")
+    day_dir = state / "retros" / datetime.date.today().isoformat()
     slugs = slug_map([d["project"] for d in due])
     log = state / "retro.log"
     start_log(log)
-    results = [(d, run_agent(root, state, run_dir, d, slugs[d["project"]], log)) for d in due]
+    results = [(d, run_agent(root, state, project_folder(day_dir, d, slugs[d["project"]]), d, slugs[d["project"]], log))
+               for d in due]
     failures = [f"{word} {slugs[d['project']]}" for d, word in results if word]
     if failures:
         return fail(state, failures)

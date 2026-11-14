@@ -18,18 +18,18 @@ EXPECTED_DENIED = [
     "Read(//w/alpha/**/.env*)", "Read(//w/alpha/**/*.pem)", "Read(//w/alpha/**/*.key)", "Read(//w/alpha/**/*.tfstate*)",
     "Read(//w/alpha/**/credentials*.json)"]
 EXPECTED_TOOLS = ([
-    "Read(//h/.software-factory/retros/2026-11-14/**)", "Read(//h/.software-factory/overlay/**)",
+    "Read(//h/.software-factory/retros/2026-11-14/alpha/**)", "Read(//h/.software-factory/overlay/**)",
     "Read(//h/.software-factory/upstream/**)", "Read(//opt/plugin/**)", "Read(//w/alpha/**)",
     "Bash(python3 /opt/plugin/scripts/retro-check apply *)",
     "Bash(python3 /opt/plugin/scripts/retro-check verdicts --project *)",
     "Bash(python3 /opt/plugin/scripts/retro-check lessons)",
     "Bash(python3 /opt/plugin/scripts/retro-check scrub *)",
     "Bash(python3 /opt/plugin/scripts/retro-check publish *)",
-    "Edit(//h/.software-factory/retros/2026-11-14/work/**)",
+    "Edit(//h/.software-factory/retros/2026-11-14/alpha/work/**)",
     "Edit(//h/.software-factory/upstream/**)",
 ])
 STATE_H = Path("/h/.software-factory")
-RUN_H = STATE_H / "retros" / "2026-11-14"
+RUN_H = STATE_H / "retros" / "2026-11-14" / "alpha"
 
 
 def load(name):
@@ -122,12 +122,27 @@ class RetroDailyTests(unittest.TestCase):
         self.assertEqual(len(edits), 2)
         for guarded in ("overlay", "retro-settings.json", "retro-failed", "metrics", "due.json", "alpha.json"):
             self.assertFalse([r for r in edits if guarded in r], guarded)
-        self.assertFalse([r for r in edits if r.endswith("/2026-11-14/**)")])  # work/ only, not the whole run folder
+        self.assertFalse([r for r in edits if r.endswith("/alpha/**)")])  # work/ only, not the whole run folder
+
+    def test_each_project_gets_its_own_folder_and_the_rules_of_one_do_not_cover_another(self):  # #200
+        code, calls = self.run_main(["/w/alpha", "/w/beta"], [0, 0])
+        day = next((self.state / "retros").iterdir())
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in day.iterdir()), ["alpha", "beta"])
+        self.assertEqual(json.loads((day / "alpha" / "due.json").read_text()), ["/w/alpha"])
+        self.assertEqual(json.loads((day / "beta" / "due.json").read_text()), ["/w/beta"])
+        self.assertFalse((day / "due.json").exists())
+        for (cmd, kw), mine, other in zip(calls, ("alpha", "beta"), ("beta", "alpha")):
+            rules = " ".join(cmd[cmd.index("--allowedTools") + 1:])
+            self.assertEqual(kw["cwd"], str(day / mine))
+            self.assertIn(f"{day}/{mine}/", rules)
+            self.assertNotIn(f"{day}/{other}", rules)
+            self.assertNotIn(f"{day}/**", rules)
 
     def test_headless_call_is_locked_down_and_the_scan_is_made_by_the_launcher(self):  # #193, #192
         code, calls = self.run_main(["/w/alpha"], [0])
         (cmd, kw), = calls
-        run_dir = next((self.state / "retros").iterdir())
+        run_dir = next(next((self.state / "retros").iterdir()).iterdir())
         prompt = cmd[2]
         self.assertEqual(code, 0)
         self.assertEqual(cmd, ["claude", "-p", prompt, "--plugin-dir", "/opt/plugin", "--agent", "software-factory:retro",
@@ -170,9 +185,9 @@ class RetroDailyTests(unittest.TestCase):
     def test_only_the_daily_cap_of_projects_run_and_the_rest_wait_for_tomorrow(self):
         names = [f"/w/p{n}" for n in range(self.daily.MAX_PROJECTS_PER_DAY + 2)]
         code, calls = self.run_main(names, [0] * len(names))
-        run_dir = next((self.state / "retros").iterdir())
+        day = next((self.state / "retros").iterdir())
         self.assertEqual((code, len(calls)), (0, 5))
-        self.assertEqual(json.loads((run_dir / "due.json").read_text()), names[:5])
+        self.assertEqual(sorted(p.name for p in day.iterdir()), [f"p{n}" for n in range(5)])
 
     def test_a_due_row_without_since_is_scanned_without_the_flag(self):
         run_dir = self.base / "run"
