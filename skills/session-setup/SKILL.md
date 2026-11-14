@@ -23,3 +23,7 @@ Goal: fewer permission prompts and a safe auto-compact threshold, written to the
    - Start the Team Lead in auto mode: `claude --agent software-factory:team-lead --permission-mode auto`. (`defaultMode: auto` only works in user settings.) Auto mode drops broad allow rules, and the gate hook's ask still prompts.
    - After a few tasks, run the built-in `/fewer-permission-prompts` to harvest more exact read-only rules.
 6. Record the chosen `Auto-compact` value in `project-facts.md` Preferences if it is not there.
+7. **Retro Engine (once per machine).** If `~/.claude/software-factory/retro-settings.json` does not exist, ask the user two questions, one at a time:
+   - "May the daily retro apply its fixes itself, or only draft them for your yes?" Options: `draft` (default) or `auto-fix`. Say plainly that auto-fix currently changes nothing on its own: every fix still waits for the user's yes, because the list of headings allowed to go live by itself is empty (`LIVE_HEADINGS` in `scripts/retro-check`).
+   - "Run the retro once a day, only for projects whose main changed? It runs on this machine." Options: yes with an hour (default 9), or no.
+   Write `{"mode": "<answer>"}` to that file. On yes, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/retro-schedule install --hour <hour>` (the user approves it). On no, tell the user they can run `/software-factory:retro` any time.

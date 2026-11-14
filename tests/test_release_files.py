@@ -60,6 +60,17 @@ class ReleaseFilesTests(unittest.TestCase):
         self.assertIn("your messages are never quoted", row)
         self.assertNotIn("never leave it", row)
 
+    def test_retro_skill_and_wiring(self):
+        skill = read("skills/retro/SKILL.md")
+        self.assertIn("name: retro\n", skill)
+        review = skill.split("## `review`", 1)[1].split("## Run a retro now", 1)[0]
+        self.assertLess(review.index("`verdict`"), review.index("create branch"))
+        self.assertIn("json.dumps", review)
+        setup = read("skills/session-setup/SKILL.md")
+        self.assertNotIn("always ask", setup)
+        self.assertIn("every fix still waits for the user's yes", setup)
+        self.assertIn("- **Overlay**: the overlay lines for this role", read("agents/team-lead.md"))
+
     def test_readme_team_table_lists_every_agent(self):
         # An agent added without a display name here fails the test on purpose.
         table = read("README.md").split("## Meet the team", 1)[1].split("## Quick start", 1)[0]
