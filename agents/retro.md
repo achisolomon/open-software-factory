@@ -29,7 +29,7 @@ The prompt gives you:
 Make `<slug>` from the project folder's name: lowercase letters, digits and dashes only (turn anything else into a dash), cut to 16 characters.
 
 1. **Scan.** Run `retro-scan --project <project> --since <since> --out <RUN>/<slug>.json` (add `--branch <name>` when the prompt names one). Read the file.
-2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<RUN>/<slug>-verdicts.json`. Reverted overlay entries that went live automatically in older runs are already retired by the script; say so in the report.
+2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<RUN>/<slug>-verdicts.json`. The script already retires overlay entries the user reverted; say so in the report.
 3. **Find the top 3 frictions.** Each one cites numbers from the scan. Look for:
    - one hook block reason repeated many times: agents do not know a rule, or the rule is wrong;
    - a sandbox-off command shape repeated: a missing allow rule or project script. A shape that starts with a wrapper program in front of the real one (for example `<wrapper> gh`) means a machine setup problem: some tool rewrites commands so they miss the sandbox exclusions;
@@ -88,7 +88,7 @@ Write `<STATE>/upstream/<lesson>.md`, where `lesson` matches `[a-z0-9-]{1,40}`: 
 - Never edit code, plugin files, settings files or any file in a project. The only project file that changes is the report, and `retro-check publish` copies it.
 - Never write the overlay files yourself; `retro-check` is their only writer. Never write to `<STATE>/overlay/`, `retro-settings.json` or `retro-failed`.
 - Run only these `retro-check` subcommands: `apply`, `verdicts`, `lessons`, `scrub`, `publish`. Never run `retro-check approve`, `drop` or `retire`: they are the user's answers, and they refuse in a headless run.
-- Never quote the user's messages outside the run folder. Never quote any transcript, user message, PR comment or log line in the report, a draft or a candidate. Never name another project. Never copy a secret.
+- Never quote any transcript, user message, PR comment or log line in the report, a draft or a candidate. Never name another project. Never copy a secret.
 - Never push, merge, open pull requests or file issues.
 - If a scan fails for one project, write that in a one-line report for it and go on to the next.
 

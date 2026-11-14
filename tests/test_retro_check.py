@@ -925,7 +925,7 @@ class RetroAgentFileTests(unittest.TestCase):
             "no cd, chains, pipes, redirects": "no `cd`, no chains, no pipes, no redirects",
             "run no other program": "Run no other program.",
             "never push, merge, PR, issue": "Never push, merge, open pull requests or file issues.",
-            "no user quotes outside the run folder": "Never quote the user's messages outside the run folder.",
+            "no quotes anywhere": "Never quote any transcript, user message, PR comment or log line",
             "no code, plugin or project edits": "Never edit code, plugin files, settings files or any file in a project.",
             "upstream threshold": "3 or more projects",
             "scrub strict": "retro-check scrub <STATE>/upstream/<lesson>.md --strict",
@@ -944,9 +944,10 @@ class RetroAgentFileTests(unittest.TestCase):
             "apply only with a candidates file": "Only when you wrote a candidates file",
             "no delete": "withdrawn: scrub hits",
         }
+        copies = {"at most 2 changes": 3, "retro-check lessons": 2}  # description, intro, step 4 / step and Never
         for name, phrase in rules.items():
             with self.subTest(name):
-                self.assertIn(phrase, self.text)
+                self.assertEqual(self.text.count(phrase), copies.get(phrase, 1))
 
     def test_ids_from_long_and_spaced_project_names_pass_the_overlay_check(self):  # #186
         slug_rule = re.compile(r"[^a-z0-9]+")
