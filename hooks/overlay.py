@@ -4,6 +4,10 @@ State lives in <state>/overlay/entries.jsonl (status active, stale or retired) a
 user's yes). <state> is $SOFTWARE_FACTORY_HOME or ~/.claude/software-factory. Shared by hooks/retro_overlay.py,
 scripts/retro-scan and scripts/retro-check. Stdlib only, Python 3.9+.
 
+An entry row holds: id, kind, class, role, text, evidence, target, status, reason, plugin_version, anchor_sha and
+went_live_at (ISO time the entry became active, set by scripts/retro-check both for an auto-fix entry and for one the
+user approved, so the next session can list what went live and offer to revert it).
+
 The entry check fails closed: an entry that is not plainly harmless waits for the user's yes, and a keyword list only
 decides which of those is rejected outright. Entry text is untrusted (it comes from transcripts and issue text).
 """

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hooks"))
@@ -26,6 +27,7 @@ def make_plugin(base, version="1.0.0", dev_text=DEV_TEXT):
     (plugin / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
     (plugin / DEV_FILE).write_text(dev_text)
     (plugin / "agents" / "security-engineer.md").write_text("# Security\n")
+    (plugin / "agents" / "team-lead.md").write_text("# Team Lead\n\n## Talking to the user\n\nKeep updates short.\n")
     return plugin
 
 
@@ -342,31 +344,48 @@ class OverlayFileTests(unittest.TestCase):
         self.assertEqual(overlay.plugin_version(plugin), "1.0.0")
 
 
-REPLY = {"file": DEV_FILE, "heading": "Reply"}  # on the auto-fix allowlist, no protected word in it
+LEAD_FILE = "agents/team-lead.md"
+TALKING = {"file": LEAD_FILE, "heading": "Talking to the user"}  # the one pair on the auto-fix allowlist
 
 
 def live(**over):
-    base = {"text": "Open each summary with one line of status.", "target": REPLY}
+    base = {"role": "team-lead", "text": "Open each status with one plain sentence.", "target": TALKING}
     base.update(over)
     return entry(**base)
+
+
+def load_check():
+    """retro-check as a module, so its functions can be called without a subprocess."""
+    module = types.ModuleType("retro_check")
+    module.__file__ = str(CHECK)
+    exec(compile(CHECK.read_text(), str(CHECK), "exec"), module.__dict__)
+    return module
+
+
+def secret(kind):
+    """Secret-shaped strings built from parts, so this file holds none."""
+    return {"github": "ghp" + "_" + "a1B2" * 9, "openai": "sk" + "-" + "Ab12" * 8, "aws": "AKIA" + "ABCD1234" * 2,
+            "pem": "-----" + "BEGIN RSA PRIVATE KEY-----", "assign": "api_key=" + "a1b2c3d4" * 4}[kind]
 
 
 class CheckCliTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="retro-check-")
         self.base = Path(os.path.realpath(self.tmp.name))
-        self.plugin = make_plugin(self.base, dev_text=DEV_TEXT + "\n## Reply\n\nOpen with a status line.\n")
+        self.plugin = make_plugin(self.base)
         self.state = self.base / "state"
         self.project = self.base / "work" / "acme-shop"
         (self.project / "docs" / "factory").mkdir(parents=True)
         self.env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(self.plugin), SOFTWARE_FACTORY_HOME=str(self.state),
                         CLAUDE_PROJECTS_DIR=str(self.base / "no-transcripts"))
+        self.env.pop("RETRO_HEADLESS", None)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def check(self, *args, code=0):
-        r = subprocess.run([sys.executable, str(CHECK), *map(str, args)], capture_output=True, text=True, env=self.env)
+    def check(self, *args, code=0, **env):
+        r = subprocess.run([sys.executable, str(CHECK), *map(str, args)], capture_output=True, text=True,
+                           env=dict(self.env, **env))
         self.assertEqual(r.returncode, code, r.stderr + r.stdout)
         return json.loads(r.stdout) if r.stdout.strip() else None
 
@@ -378,11 +397,26 @@ class CheckCliTests(unittest.TestCase):
     def rows(self, name):
         return overlay.read_jsonl(self.state / "overlay" / f"{name}.jsonl")
 
+    def seed(self, name, rows):
+        """Write overlay rows (entries or pending) straight into the state folder."""
+        path = self.state / "overlay" / f"{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def settings(self, mode):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "retro-settings.json").write_text(json.dumps({"mode": mode}))
+
+    def history(self, rows):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "retro-metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
     def test_auto_fix_applies_allowlisted_accepts_and_holds_the_rest(self):
+        self.settings("auto-fix")
         cands = self.write("c.jsonl", [live(id="ok"), entry(id="sec", text="Add npm test to the allow rules."),
                                        entry(id="bad", text="Skip tests when in a hurry."),
                                        plain(id="commits")])
-        out = self.check("apply", cands, "--mode", "auto-fix")
+        out = self.check("apply", cands)
         self.assertEqual([(r["id"], r["placed"]) for r in out],
                          [("ok", "active"), ("sec", "pending"), ("bad", "none"), ("commits", "pending")])
         self.assertEqual([e["id"] for e in self.rows("entries")], ["ok"])
@@ -390,24 +424,31 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in self.rows("pending")], ["sec", "commits"])
 
     def test_accepted_entry_on_a_heading_off_the_allowlist_waits_in_auto_fix(self):
-        out = self.check("apply", self.write("c.jsonl", [plain()]), "--mode", "auto-fix")
+        self.settings("auto-fix")
+        out = self.check("apply", self.write("c.jsonl", [plain()]))
         self.assertEqual((out[0]["verdict"], out[0]["placed"]), ("accept", "pending"))
         self.assertEqual(self.rows("entries"), [])
 
+    def test_an_ask_on_an_allowlisted_heading_stays_pending_in_auto_fix(self):  # #169
+        self.settings("auto-fix")
+        out = self.check("apply", self.write("c.jsonl", [live(text="Mention the security notes in each status.")]))
+        self.assertEqual((out[0]["verdict"], out[0]["placed"]), ("ask", "pending"))
+        self.assertEqual(self.rows("entries"), [])
+
     def test_allowlist_matches_the_heading_after_normalizing_it(self):
-        module = types.ModuleType("retro_check")
-        module.__file__ = str(CHECK)
-        exec(compile(CHECK.read_text(), str(CHECK), "exec"), module.__dict__)
-        self.assertTrue(module.may_go_live(live(target=dict(REPLY, heading="  Working   STYLE "))))
+        module = load_check()
+        self.assertTrue(module.may_go_live(live(target=dict(TALKING, heading="  Talking   TO the  user ")), self.plugin))
         self.assertFalse(module.may_go_live(plain()))
         self.assertFalse(module.may_go_live({"kind": "pref"}))
 
-    def test_entries_that_go_live_carry_a_timestamp_and_approved_ones_do_not(self):
-        self.check("apply", self.write("c.jsonl", [live(id="ok"), plain(id="held")]), "--mode", "auto-fix")
+    def test_entries_that_go_live_carry_a_timestamp_also_when_the_user_approves(self):  # #167
+        self.settings("auto-fix")
+        self.check("apply", self.write("c.jsonl", [live(id="ok"), plain(id="held")]))
         self.check("approve", "held")
         by_id = {e["id"]: e for e in self.rows("entries")}
         self.assertRegex(by_id["ok"]["went_live_at"], r"^\d{4}-\d\d-\d\dT")
-        self.assertNotIn("went_live_at", by_id["held"])
+        self.assertRegex(by_id["held"]["went_live_at"], r"^\d{4}-\d\d-\d\dT")
+        self.assertNotIn("reason", by_id["held"])
 
     def test_draft_mode_is_the_default_and_holds_everything(self):
         out = self.check("apply", self.write("c.jsonl", [live()]))
@@ -415,8 +456,9 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual(self.rows("entries"), [])
 
     def test_duplicate_id_is_rejected(self):
-        self.check("apply", self.write("c.jsonl", [live()]), "--mode", "auto-fix")
-        out = self.check("apply", self.write("d.jsonl", [live()]), "--mode", "auto-fix")
+        self.settings("auto-fix")
+        self.check("apply", self.write("c.jsonl", [live()]))
+        out = self.check("apply", self.write("d.jsonl", [live()]))
         self.assertEqual(out[0]["verdict"], "reject")
 
     def test_approve_drop_and_retire(self):
@@ -436,12 +478,28 @@ class CheckCliTests(unittest.TestCase):
                                     "headline": dict({"errors": 10}, **headline), "sandbox_off": {"rtk gh": 6}}))
         return path
 
+    def report(self, text="# Retro\n\n3 sandbox-off gh calls per session.\n"):
+        """A report where publish expects it: <state>/retros/."""
+        path = self.state / "retros" / "r.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def changes(self, rows=()):
+        path = self.base / "ch.json"
+        path.write_text(json.dumps(list(rows)))
+        return path
+
+    def publish(self, report=None, sha="abcdef1234", metrics=None, changes=None, project=None, code=0):
+        return self.check("publish", report or self.report(), "--project", project or self.project, "--sha", sha,
+                          "--metrics", metrics or self.metrics(), "--changes", changes or self.changes(), code=code)
+
     def test_publish_copies_report_records_baseline_and_verdicts_close_the_loop(self):
-        report = self.base / "r.md"
-        report.write_text("# Retro\n\n3 sandbox-off gh calls per session.\n")
+        report = self.report()
         changes = self.base / "ch.json"
         changes.write_text(json.dumps([{"id": "ok", "lesson": "gh-wrapper", "level": "user", "metric": "sandbox_off.rtk gh"}]))
-        self.check("apply", self.write("c.jsonl", [live(id="ok")]), "--mode", "auto-fix")
+        self.settings("auto-fix")
+        self.check("apply", self.write("c.jsonl", [live(id="ok")]))
         out = self.check("publish", report, "--project", self.project, "--sha", "abcdef1234", "--metrics", self.metrics(),
                          "--changes", changes)
         dest = self.project / "docs" / "factory" / "retros" / "2026-11-14-abcdef1.md"
@@ -456,12 +514,7 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual(self.rows("entries")[0]["status"], "retired")
 
     def test_publish_refuses_a_report_with_a_home_path(self):
-        report = self.base / "r.md"
-        report.write_text("Seen in /User" + "s/jane/work/app.\n")  # split so this file holds no home path itself
-        changes = self.base / "ch.json"
-        changes.write_text("[]")
-        out = self.check("publish", report, "--project", self.project, "--sha", "abc1234", "--metrics", self.metrics(),
-                         "--changes", changes, code=1)
+        out = self.publish(self.report("Seen in /User" + "s/jane/work/app.\n"), code=1)  # split: no home path in this file
         self.assertFalse(out["published"])
         self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
 
@@ -482,9 +535,299 @@ class CheckCliTests(unittest.TestCase):
         self.state.mkdir(parents=True, exist_ok=True)
         rows = [{"project": "/p/a", "changes": [{"id": "x1", "lesson": "gh-wrapper"}]},
                 {"project": "/p/b", "changes": [{"id": "x2", "lesson": "gh-wrapper"}]},
-                {"project": "/p/a", "changes": [], "previous": [{"id": "x1", "verdict": "kept"}]}]
+                {"project": "/p/a", "changes": [], "previous": [{"id": "x1", "verdict": "kept"}]},
+                {"project": "/p/b", "changes": [], "previous": [{"id": "x2", "verdict": "reverted"}]}]  # #169
         (self.state / "retro-metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
         self.assertEqual(self.check("lessons"), {"gh-wrapper": {"projects": 2, "changes": 2, "kept": 1}})
+
+    # --- fix round 1 (#167-#175) ---
+
+    def test_live_entry_needs_its_own_agent_as_role(self):  # #174
+        self.settings("auto-fix")
+        out = self.check("apply", self.write("c.jsonl", [live(id="a", role="all"), live(id="b", role="software-developer")]))
+        self.assertEqual([(r["verdict"], r["placed"]) for r in out], [("accept", "pending")] * 2)
+        self.assertEqual(self.rows("entries"), [])
+
+    def test_reply_clean_code_and_other_old_headings_are_off_the_allowlist(self):  # #174
+        module = load_check()
+        for heading in ("Reply", "Clean code", "Summary", "Working style"):
+            target = {"file": DEV_FILE, "heading": heading}
+            self.assertFalse(module.may_go_live(entry(role="software-developer", target=target), self.plugin), heading)
+        arch = {"file": "agents/software-architect.md", "heading": "Working style"}
+        self.assertFalse(module.may_go_live(entry(role="software-architect", target=arch), ROOT))
+
+    def test_reviewer_roles_never_go_live_even_on_a_listed_pair(self):  # #174
+        module = load_check()
+        module.LIVE_HEADINGS = frozenset({("agents/security-engineer.md", "security")})
+        cand = entry(role="security-engineer", target={"file": "agents/security-engineer.md", "heading": "Security"})
+        self.assertFalse(module.may_go_live(cand, self.plugin))
+
+    def test_a_file_with_a_review_heading_never_goes_live_even_on_a_listed_pair(self):  # #174
+        module = load_check()
+        (self.plugin / "agents" / "finops-engineer.md").write_text("# FinOps\n\n## Review mode\n\nx\n\n## Notes\n\nx\n")
+        module.LIVE_HEADINGS = frozenset({("agents/finops-engineer.md", "notes"), (DEV_FILE, "commits")})
+        finops = entry(role="finops-engineer", target={"file": "agents/finops-engineer.md", "heading": "Notes"})
+        self.assertFalse(module.may_go_live(finops, self.plugin))
+        self.assertTrue(module.may_go_live(entry(role="software-developer", target=COMMITS), self.plugin))
+
+    def test_every_allowlist_pair_is_a_real_section_of_a_non_reviewer_agent(self):  # #168, #174
+        module = load_check()
+        self.assertTrue(module.LIVE_HEADINGS)
+        for file, heading in module.LIVE_HEADINGS:
+            titles = {overlay.norm(t) for _, _, t in overlay._headings((ROOT / file).read_text().splitlines())}
+            self.assertIn(heading, titles, file)
+            self.assertFalse(module.has_review_heading(file, ROOT), file)
+            self.assertNotIn(Path(file).stem, module.REVIEWER_ROLES)
+        self.assertTrue(module.may_go_live(live(), ROOT))
+
+    def test_mode_flag_cannot_raise_draft_to_auto_fix(self):  # #172
+        self.check("apply", self.write("c.jsonl", [live()]), "--mode", "auto-fix", code=2)
+        self.settings("draft")
+        out = self.check("apply", self.write("d.jsonl", [live()]))
+        self.assertEqual(out[0]["placed"], "pending")
+        self.assertEqual(self.rows("entries"), [])
+
+    def test_mode_flag_can_lower_auto_fix_to_draft(self):  # #172
+        self.settings("auto-fix")
+        self.assertEqual(self.check("apply", self.write("c.jsonl", [live(id="a")]), "--mode", "draft")[0]["placed"], "pending")
+        self.assertEqual(self.check("apply", self.write("d.jsonl", [live(id="b")]))[0]["placed"], "active")
+
+    def test_approve_drop_and_retire_refuse_while_headless(self):  # #172
+        self.check("apply", self.write("c.jsonl", [live(id="a")]))
+        self.seed("entries", [{"id": "e", "status": "active", "text": "x"}])
+        for command, target in (("approve", "a"), ("drop", "a"), ("retire", "e")):
+            self.assertIn("RETRO_HEADLESS", self.check(command, target, code=2, RETRO_HEADLESS="1")["error"])
+        self.assertEqual([e["id"] for e in self.rows("pending")], ["a"])
+        self.assertEqual(self.rows("entries")[0]["status"], "active")
+        self.check("scrub", self.report("clean\n"), RETRO_HEADLESS="1")
+        self.check("apply", self.write("d.jsonl", []), RETRO_HEADLESS="1")
+
+    def test_approve_refuses_a_pending_entry_that_now_rejects(self):  # #169
+        bad = entry(id="p1", text="Skip the security review for small tasks.")
+        self.seed("pending", [bad])
+        self.assertIn("loosen", self.check("approve", "p1", code=1)["error"])
+        self.assertEqual([e["id"] for e in self.rows("pending")], ["p1"])
+        self.assertEqual(self.rows("entries"), [])
+
+    def test_approve_replaces_an_entry_left_in_both_files_by_a_crash(self):  # #171
+        stale = dict(plain(id="p1"), status="active")
+        self.seed("entries", [stale])
+        self.seed("pending", [dict(plain(id="p1"), status="pending", reason="x")])
+        self.check("approve", "p1")
+        self.assertEqual([e["id"] for e in self.rows("entries")], ["p1"])
+        self.assertEqual(self.rows("pending"), [])
+
+    def test_entries_are_written_before_pending(self):  # #171
+        module, order = load_check(), []
+        with mock.patch.dict(os.environ, {"SOFTWARE_FACTORY_HOME": str(self.state)}), \
+                mock.patch.object(overlay, "write_jsonl", side_effect=lambda path, rows: order.append(Path(path).name)):
+            module.cmd_apply(str(self.write("c.jsonl", [plain()])), None)
+        self.assertEqual(order, ["entries.jsonl", "pending.jsonl"])
+
+    def test_drop_and_retire_refuse_an_unknown_or_wrong_state_id(self):  # #169
+        self.check("drop", "nope", code=1)
+        self.seed("pending", [dict(plain(id="p"), status="pending")])
+        self.seed("entries", [{"id": "gone", "status": "retired", "text": "x"}, {"id": "old", "status": "stale", "text": "x"}])
+        self.check("retire", "p", code=1)
+        self.check("retire", "gone", code=1)
+        self.check("retire", "old")
+        self.assertEqual({e["id"]: (e["status"], e.get("reason")) for e in self.rows("entries")}["old"],
+                         ("retired", "retired by the user"))
+
+    def test_duplicate_ids_are_rejected_against_pending_and_inside_one_batch(self):  # #169
+        out = self.check("apply", self.write("c.jsonl", [plain(id="d"), plain(id="d")]))
+        self.assertEqual([(r["verdict"], r["reason"]) for r in out], [("accept", "ok"), ("reject", "id already in use")])
+        self.assertEqual(self.check("apply", self.write("d.jsonl", [plain(id="d")]))[0]["reason"], "id already in use")
+        self.assertEqual([e["id"] for e in self.rows("pending")], ["d"])
+        self.assertEqual(self.rows("pending")[0]["reason"], "ok")
+
+    def test_apply_passes_the_active_entries_to_the_check(self):  # #169: the line cap sees them
+        self.seed("entries", [{"id": "big", "status": "active", "text": "\n".join(["x"] * overlay.LINE_CAP)}])
+        out = self.check("apply", self.write("c.jsonl", [plain()]))
+        self.assertIn("cap", out[0]["reason"])
+
+    def test_apply_reports_corrupt_lines_and_skips_a_bad_id_without_stopping(self):  # #171, S5
+        path = self.base / "c.jsonl"
+        path.write_text(json.dumps(plain(id=["x"])) + "\nnot json\n[1]\n" + json.dumps(plain(id="good")) + "\n")
+        out = self.check("apply", path)
+        self.assertEqual([(r["id"], r["verdict"]) for r in out],
+                         [(["x"], "reject"), ("good", "accept"), (None, "reject"), (None, "reject")])
+        self.assertEqual([r["reason"] for r in out[2:]], ["corrupt candidate line"] * 2)
+        self.assertEqual([e["id"] for e in self.rows("pending")], ["good"])
+
+    def test_bad_input_gives_exit_2_and_an_error_not_a_traceback(self):  # #171
+        for args in (("apply", self.base / "none.jsonl"), ("scrub", self.base / "none.md"),
+                     ("verdicts", "--project", self.project, "--metrics", self.base / "none.json")):
+            if args[0] == "verdicts":
+                self.history([{"project": str(self.project), "changes": []}])
+            self.assertIn("error", self.check(*args, code=2), args)
+
+    def test_publish_input_errors_are_clear(self):  # #171
+        bad_changes = self.base / "bad.json"
+        bad_changes.write_text("{not json")
+        self.assertIn("error", self.publish(changes=bad_changes, code=2))
+        bad_changes.write_text('{"a": 1}')
+        self.assertIn("list", self.publish(changes=bad_changes, code=2)["error"])
+        bad_changes.write_text("[1]")
+        self.assertIn("objects", self.publish(changes=bad_changes, code=2)["error"])
+        self.assertIn("error", self.publish(metrics=self.base / "none.json", code=2))
+        self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
+
+    def test_publish_refuses_a_sha_that_is_not_hex(self):  # #173
+        for sha in ("../../esc", "ABCDEF1", "abcdef", "g" * 7, "a" * 41, "abcdef1\n", "/CLAUDE"):
+            self.assertIn("sha", self.publish(sha=sha, code=2)["error"], repr(sha))
+        self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
+
+    def metrics_with(self, window):
+        path = self.base / "mw.json"
+        path.write_text(json.dumps({"sessions": 1, "window": window, "headline": {}}))
+        return path
+
+    def test_publish_refuses_a_missing_or_non_date_until(self):  # #173, #171
+        for window in ({}, {"until": "../../../x"}, {"until": "/abs"}, {"until": "not-a-date"}, {"until": 5}, None):
+            self.assertIn("until", self.publish(metrics=self.metrics_with(window), code=2)["error"], window)
+        self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
+
+    def test_publish_takes_a_z_suffixed_until_and_leaves_only_the_report_behind(self):  # #173
+        out = self.publish(metrics=self.metrics_with({"until": "2026-11-14T08:00:00Z"}))
+        self.assertEqual(Path(out["path"]).name, "2026-11-14-abcdef1.md")
+        self.assertEqual([p.name for p in (self.project / "docs" / "factory" / "retros").iterdir()], ["2026-11-14-abcdef1.md"])
+
+    def test_publish_refuses_a_symlinked_destination(self):  # #173
+        retros = self.project / "docs" / "factory" / "retros"
+        retros.mkdir()
+        victim = self.base / "victim.md"
+        victim.write_text("keep")
+        (retros / "2026-11-14-abcdef1.md").symlink_to(victim)
+        self.assertIn("symlink", self.publish(code=2)["error"])
+        self.assertEqual(victim.read_text(), "keep")
+        (retros / "2026-11-14-abcdef1.md").unlink()
+        sibling = retros / "other.md"
+        sibling.write_text("keep")
+        (retros / "2026-11-14-abcdef1.md").symlink_to(sibling)  # a link that stays inside retros is refused too
+        self.assertIn("symlink", self.publish(code=2)["error"])
+        self.assertEqual(sibling.read_text(), "keep")
+
+    def test_publish_refuses_a_symlinked_retros_folder_and_a_project_without_docs_factory(self):  # #173
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        (self.project / "docs" / "factory" / "retros").symlink_to(elsewhere)
+        self.assertIn("symlink", self.publish(code=2)["error"])
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        bare = self.base / "work" / "bare"
+        bare.mkdir()
+        self.assertIn("docs/factory", self.publish(project=bare, code=2)["error"])
+
+    def test_publish_refuses_a_report_outside_the_state_retros_folder_or_a_symlink(self):  # #173
+        outside = self.base / "r.md"
+        outside.write_text("fine\n")
+        self.assertIn("inside", self.publish(report=outside, code=2)["error"])
+        link = self.report().with_name("link.md")
+        link.symlink_to(outside)
+        self.assertIn("symlink", self.publish(report=link, code=2)["error"])
+        self.assertIn("inside", self.publish(report=self.state / "retros" / "missing.md", code=2)["error"])
+
+    def test_publish_refuses_secrets_without_echoing_them_and_other_project_names(self):  # #175
+        self.history([{"project": str(self.project)}, {"project": "/w/globex-app"}])
+        out = self.publish(self.report("Fine line.\nToken " + secret("github") + " leaked.\n"), code=1)
+        self.assertEqual([(h["line"], h["pattern"]) for h in out["hits"]], [(2, "token")])
+        self.assertNotIn(secret("github"), json.dumps(out))
+        out = self.publish(self.report("Seen in globex-app today.\n"), code=1)
+        self.assertEqual([(h["pattern"], h["match"]) for h in out["hits"]], [("project name", "globex-app")])
+        self.publish(self.report("Seen in acme-shop today.\n"))  # the project's own name is fine
+
+    def test_scrub_catches_secrets_and_path_variants_and_names_the_line(self):  # #175
+        cases = {name: secret(name) for name in ("github", "openai", "aws", "pem", "assign")}
+        cases.update({"tilde": "see ~/" + ".ssh/config", "home variable": "cd $HOME/work", "braced": "${HOME}/x",
+                      "windows": "at C:\\" + "Users\\jane\\app", "lower case": "at /us" + "ers/jane/x",
+                      "zero width": "at /Us" + "\u200b" + "ers/jane/x"})
+        for name, text in cases.items():
+            with self.subTest(name):
+                f = self.base / "s.md"
+                f.write_text("clean line\n" + text + "\n")
+                out = self.check("scrub", f, code=1)
+                self.assertEqual({h["line"] for h in out["hits"]}, {2})
+                if name in ("github", "openai", "aws", "pem", "assign"):
+                    self.assertNotIn(text, json.dumps(out))
+                    self.assertTrue(all("match" not in h for h in out["hits"]))
+
+    def test_scrub_exit_codes_clean_hits_and_missing_file(self):  # #175
+        clean = self.base / "clean.md"
+        clean.write_text("Nothing private here. Use the cached token budget.\n")
+        self.assertEqual(self.check("scrub", clean), {"hits": []})
+        self.assertIn("error", self.check("scrub", clean, self.base / "none.md", code=2))
+
+    def test_scrub_reports_each_file_and_line_for_home_paths_and_emails(self):  # #169
+        a, b = self.base / "a.md", self.base / "b.md"
+        a.write_text("ok\nSee /ho" + "me/jane/x\n")
+        b.write_text("mail a@b.co\n")
+        hits = self.check("scrub", a, b, code=1)["hits"]
+        self.assertEqual([(Path(h["file"]).name, h["line"]) for h in hits], [("a.md", 2), ("b.md", 1)])
+
+    def test_strict_scrub_matches_whole_words_only_and_skips_short_words(self):  # #169
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "private-words.txt").write_text("Globex\nabc\n")
+        f = self.base / "w.md"
+        f.write_text("globexcorp and abc and my-globex here\n")
+        self.check("scrub", f, "--strict")
+        f.write_text("Globex. And abc.\n")
+        self.assertEqual([h["match"] for h in self.check("scrub", f, "--strict", code=1)["hits"]], ["Globex"])
+
+    def test_strict_scrub_uses_the_projects_retro_scan_discovers(self):  # #169
+        module = load_check()
+        module.discovered_projects = lambda: ["/w/globex-app"]
+        with mock.patch.dict(os.environ, {"SOFTWARE_FACTORY_HOME": str(self.state)}):
+            self.assertIn("globex-app", module.private_words())
+            self.assertNotIn("globex-app", module.private_words(own_project="/w/globex-app"))
+
+    def run_verdicts(self, changes, metrics, history_before=()):
+        self.history(list(history_before) + [{"project": str(self.project), "changes": changes}])
+        path = self.base / "vm.json"
+        path.write_text(json.dumps(metrics))
+        return self.check("verdicts", "--project", self.project, "--metrics", path)
+
+    def test_verdicts_compare_with_the_baseline_and_an_absent_metric_is_unknown(self):  # #170, #169
+        metrics = {"sessions": 1, "headline": {"errors": 3}, "sandbox_off": {"rtk gh": 4, "zero": 0}}
+        cases = [("sandbox_off.rtk gh", 5, "kept"), ("sandbox_off.rtk gh", 4, "reverted"),
+                 ("sandbox_off.rtk gh", 3, "reverted"), ("sandbox_off.zero", 0, "kept"),
+                 ("sandbox_off.typo", 5, "unknown"), ("nosection.x", 5, "unknown"),
+                 ("sandbox_off.rtk gh", None, "unknown"), ("errors", 5, "kept")]
+        out = self.run_verdicts([{"id": f"c{i}", "metric": m, "baseline": b} for i, (m, b, _) in enumerate(cases)], metrics)
+        self.assertEqual([v["verdict"] for v in out], [v for _, _, v in cases])
+
+    def test_verdicts_skip_a_change_with_no_metric_and_a_project_with_no_history(self):  # #169
+        self.assertEqual(self.run_verdicts([{"id": "n", "baseline": 1}, {"id": "m", "metric": "", "baseline": 1}], {}), [])
+        self.history([])
+        self.assertEqual(self.check("verdicts", "--project", self.project, "--metrics", self.base / "none.json"), [])
+
+    def test_verdicts_use_the_last_row_of_this_project_only(self):  # #169
+        other = {"project": "/p/other", "changes": [{"id": "theirs", "metric": "errors", "baseline": 9}]}
+        old = {"project": str(self.project), "changes": [{"id": "old", "metric": "errors", "baseline": 9}]}
+        out = self.run_verdicts([{"id": "new", "metric": "errors", "baseline": 9}], {"headline": {"errors": 1}}, [old])
+        self.assertEqual([v["id"] for v in out], ["new"])
+        self.history([{"project": str(self.project), "changes": [{"id": "mine", "metric": "errors", "baseline": 9}]}, other])
+        metrics = self.base / "vm.json"
+        self.assertEqual([v["id"] for v in self.check("verdicts", "--project", self.project, "--metrics", metrics)], ["mine"])
+
+    def test_verdicts_retire_only_reverted_entries_that_went_live(self):  # #169, S7
+        stamp = "2026-11-14T00:00:00+00:00"
+        self.seed("entries", [{"id": "live", "status": "active", "text": "x", "went_live_at": stamp},
+                              {"id": "good", "status": "active", "text": "x", "went_live_at": stamp},
+                              {"id": "unk", "status": "active", "text": "x", "went_live_at": stamp},
+                              {"id": "hand", "status": "active", "text": "x"}])
+        changes = [{"id": "live", "metric": "errors", "baseline": 1}, {"id": "good", "metric": "errors", "baseline": 9},
+                   {"id": "unk", "metric": "typo", "baseline": 1}, {"id": "hand", "metric": "errors", "baseline": 1}]
+        self.run_verdicts(changes, {"headline": {"errors": 5}})
+        self.assertEqual({e["id"]: e["status"] for e in self.rows("entries")},
+                         {"live": "retired", "good": "active", "unk": "active", "hand": "active"})
+
+    def test_a_typo_metric_has_no_value_and_publish_records_no_baseline_for_it(self):  # #170
+        module = load_check()
+        metrics = {"sessions": 2, "sandbox_off": {"rtk gh": 6}}
+        self.assertEqual(module.metric_value(metrics, "sandbox_off.rtk gh"), 3.0)
+        self.assertIsNone(module.metric_value(metrics, "sandbox_off.rtk  gh"))
+        self.publish(changes=self.changes([{"id": "c", "metric": "sandbox_off.typo"}]))
+        self.assertIsNone(overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]["changes"][0]["baseline"])
 
 
 if __name__ == "__main__":

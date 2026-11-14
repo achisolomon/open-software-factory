@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """Retro Engine checks, and the only writer of the overlay and the retro history. Prints JSON.
 
-  retro-check apply CANDIDATES [--mode draft|auto-fix]   check each candidate entry (JSONL). In auto-fix mode an
-                                                        accepted entry goes active only when its target heading is
-                                                        in LIVE_HEADINGS; every other entry that passes waits in
-                                                        pending. Mode defaults to retro-settings.json, else draft.
-  retro-check approve ID | drop ID | retire ID          after the user's answer; approve re-checks the entry
-  retro-check verdicts --project P --metrics FILE       kept or reverted for the previous retro's changes, and
-                                                        retires reverted overlay entries
+  retro-check apply CANDIDATES [--mode draft]           check each candidate entry (JSONL). Mode comes from
+                                                        retro-settings.json (default draft); the flag can only lower
+                                                        it to draft. In auto-fix mode an accepted entry goes active
+                                                        only when may_go_live() allows it; every other entry that
+                                                        passes waits in pending. Corrupt lines come back as rejects.
+  retro-check approve ID | drop ID | retire ID          after the user's answer. Refuse (exit 2) when RETRO_HEADLESS=1,
+                                                        which the headless launcher sets. approve re-checks the entry
+  retro-check verdicts --project P --metrics FILE       kept, reverted or unknown for the previous retro's changes;
+                                                        retires reverted entries that went live
   retro-check lessons                                   projects, changes and kept counts per lesson key
-  retro-check scrub FILE... [--strict]                  exit 1 if a file holds a home path or an email; --strict
-                                                        also flags discovered project names and private-words.txt
+  retro-check scrub FILE... [--strict]                  exit 1 if a file holds a secret, a home path or an email;
+                                                        --strict also flags discovered project names and
+                                                        private-words.txt. Exit 2 on a missing or unreadable file
   retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
-                                                        scrub the report, copy it to <P>/docs/factory/retros/ and
-                                                        append the history row
+                                                        scrub the report (strict, minus P's own name), write it to
+                                                        <P>/docs/factory/retros/ and append the history row. REPORT
+                                                        must sit in <state>/retros/
+Exit codes: 0 done or clean, 1 a check said no (hits, refused entry), 2 bad input or not allowed.
 Stdlib only, Python 3.9+.
 """
 
@@ -22,20 +27,47 @@ from datetime import datetime, timezone
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import os
 from pathlib import Path
 import re
-import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import overlay  # noqa: E402
 
-HOME_PATH = re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+")
+HOME_PATH = re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+", re.I)
+TILDE_PATH = re.compile(r"(?<!\w)~/\S")
+HOME_VARIABLE = re.compile(r"\$\{?HOME\b")
+WINDOWS_USER_PATH = re.compile(r"\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+", re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+TOKEN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|"
+                   r"AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})")
+PRIVATE_KEY = re.compile(r"-----BEGIN")
+KEY_ASSIGNMENT = re.compile(r"(?:key|token|secret|passw(?:or)?d)\s*[=:]\s*[\"']?[A-Za-z0-9+/=]{24,}", re.I)
+# (name, pattern, echo the match). A secret is never echoed back, only its line and name.
+SCRUB_PATTERNS = (("home path", HOME_PATH, True), ("tilde path", TILDE_PATH, True),
+                  ("home variable", HOME_VARIABLE, True), ("windows user path", WINDOWS_USER_PATH, True),
+                  ("email", EMAIL, True), ("token", TOKEN, False), ("private key", PRIVATE_KEY, False),
+                  ("key assignment", KEY_ASSIGNMENT, False))
 PUBLIC_NAMES = {"software-factory", "open-software-factory"}
-# The only headings an accepted entry may go live on without the user's yes (auto-fix mode): how an agent words its
-# reply or writes its code, never what it may skip or do. Compared after overlay.norm().
-LIVE_HEADINGS = frozenset(overlay.norm(h) for h in ("Reply", "Summary", "Working style", "Clean code"))
+
+# The only (agent file, heading) pairs an accepted entry may go live on without the user's yes (auto-fix mode), and
+# only for that file's own agent: how the Team Lead words its updates to the user, never what any role may skip or do.
+# Headings are compared after overlay.norm(). Why this is so short: #161 (auto-fix is opt-in) and #174 (an entry may
+# not carry a role other than its file's agent, never `all`, never a reviewer; "Reply" and "Clean code" were dropped).
+# The Architect's "Working style" is not listed because the Architect is a reviewer role. Add a pair only after
+# reading the section. The spec records this list in Task 11 (#168).
+LIVE_HEADINGS = frozenset({("agents/team-lead.md", overlay.norm("Talking to the user"))})
+REVIEWER_ROLES = frozenset({"security-engineer", "test-automation-engineer", "software-architect"})
+REVIEW_HEADING = re.compile(r"^#{1,6}\s.*review", re.I | re.M)
+SHA = re.compile(r"[0-9a-f]{7,40}")
+USER_ONLY = ("approve", "drop", "retire")
+HEADLESS_ENV = "RETRO_HEADLESS"
+
+
+class CheckError(Exception):
+    """Bad input or a refused action. main() prints it as {"error": ...} and exits 2."""
 
 
 def entries():
@@ -50,33 +82,69 @@ def active(rows):
     return [e for e in rows if e.get("status") == "active"]
 
 
-def may_go_live(cand):
+def load_json(path, kind):
+    """Parsed JSON of the kind (list or dict) from a file, or CheckError."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise CheckError(f"cannot read {path}: {err}") from err
+    if not isinstance(data, kind):
+        raise CheckError(f"{path} must hold a JSON {kind.__name__}")
+    return data
+
+
+def effective_mode(flag):
+    """auto-fix only when retro-settings.json says so. The flag can lower the mode to draft, never raise it (#172)."""
+    return "auto-fix" if overlay.settings().get("mode") == "auto-fix" and flag != "draft" else "draft"
+
+
+def has_review_heading(file, root):
+    try:
+        return REVIEW_HEADING.search((root / file).read_text(encoding="utf-8")) is not None
+    except OSError:
+        return True  # a file that cannot be read is not one to trust
+
+
+def may_go_live(cand, root=None):
     target = cand.get("target")
-    return isinstance(target, dict) and overlay.norm(target.get("heading", "")) in LIVE_HEADINGS
+    if not isinstance(target, dict) or not isinstance(target.get("file"), str):
+        return False
+    if (target["file"], overlay.norm(target.get("heading", ""))) not in LIVE_HEADINGS:
+        return False
+    role = cand.get("role")
+    return (role == Path(target["file"]).stem and role not in REVIEWER_ROLES
+            and not has_review_heading(target["file"], (root or overlay.PLUGIN_ROOT)))
 
 
-def cmd_apply(path, mode):
-    mode = mode or overlay.settings().get("mode") or "draft"
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def cmd_apply(path, mode_flag):
+    if not Path(path).is_file():
+        raise CheckError(f"no candidates file {path}")
+    rows, bad_lines = overlay.read_jsonl_counted(path)
+    mode = effective_mode(mode_flag)
     current, waiting = entries(), pending()
     ids = {e.get("id") for e in current + waiting}
     results = []
-    for cand in overlay.read_jsonl(path):
-        if cand.get("id") in ids:
-            results.append({"id": cand.get("id"), "verdict": "reject", "reason": "id already in use", "placed": "none"})
-            continue
+    for cand in rows:
         verdict, reason = overlay.verdict(cand, active(current))
+        if verdict != "reject" and cand["id"] in ids:
+            verdict, reason = "reject", "id already in use"
         placed = "none"
         if verdict != "reject":
             e = overlay.stamp(cand)
             if verdict == "accept" and mode == "auto-fix" and may_go_live(cand):
-                e["status"], placed = "active", "active"
-                e["went_live_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")  # for the next session's list
+                e["status"], e["went_live_at"], placed = "active", now(), "active"  # for the next session's list
                 current.append(e)
             else:
                 e["status"], e["reason"], placed = "pending", reason, "pending"
                 waiting.append(e)
             ids.add(cand["id"])
         results.append({"id": cand.get("id"), "verdict": verdict, "reason": reason, "placed": placed})
+    results += [{"id": None, "verdict": "reject", "reason": "corrupt candidate line", "placed": "none"}] * bad_lines
+    # entries first: a crash between the two leaves a candidate to re-apply, never a lost entry
     overlay.write_jsonl(overlay.overlay_file("entries"), current)
     overlay.write_jsonl(overlay.overlay_file("pending"), waiting)
     return results, 0
@@ -91,9 +159,10 @@ def cmd_approve(entry_id):
     if verdict == "reject":  # the user's yes covers an ask, never a reject
         return {"error": reason}, 1
     e = overlay.stamp(found[0])
-    e["status"] = "active"
+    e["status"], e["went_live_at"] = "active", now()  # approved entries show in the next session's list too (#167)
     e.pop("reason", None)
-    overlay.write_jsonl(overlay.overlay_file("entries"), current + [e])
+    # entries first: a crash between the two leaves the id in both files, and a re-approve replaces it
+    overlay.write_jsonl(overlay.overlay_file("entries"), [x for x in current if x.get("id") != entry_id] + [e])
     overlay.write_jsonl(overlay.overlay_file("pending"), [x for x in waiting if x.get("id") != entry_id])
     return {"id": entry_id, "status": "active"}, 0
 
@@ -131,32 +200,36 @@ def metric_value(metrics, name):
     else:
         section, _, key = str(name).partition(".")
         table = metrics.get(section)
-        if not isinstance(table, dict) or not key:
+        if not isinstance(table, dict) or key not in table:  # a typo must not read as zero
             return None
-        value = table.get(key, 0)
+        value = table[key]
     if not isinstance(value, (int, float)):
         return None
     return round(value / sessions, 3)
+
+
+def verdict_for(baseline, now_value):
+    if baseline is None or now_value is None:
+        return "unknown"
+    return "kept" if now_value < baseline or now_value == baseline == 0 else "reverted"  # lower is better for all
 
 
 def cmd_verdicts(project, metrics_path):
     rows = [r for r in overlay.read_jsonl(overlay.history_file()) if r.get("project") == project]
     if not rows:
         return [], 0
-    metrics = json.loads(Path(metrics_path).read_text())
+    metrics = load_json(metrics_path, dict)
+    went_live = {e.get("id") for e in entries() if e.get("went_live_at")}  # never retire an entry the user wrote
     out = []
     for ch in rows[-1].get("changes") or []:
-        baseline = ch.get("baseline")
-        if baseline is None or not ch.get("metric"):
+        if not ch.get("metric"):
             continue
-        now = metric_value(metrics, ch["metric"])
-        if now is None:
-            verdict = "unknown"
-        else:
-            verdict = "kept" if now < baseline or now == baseline == 0 else "reverted"  # lower is better for all
-        if verdict == "reverted":
-            retire(ch.get("id"), "retro: its metric did not improve")
-        out.append({"id": ch.get("id"), "metric": ch["metric"], "baseline": baseline, "now": now, "verdict": verdict})
+        baseline, now_value = ch.get("baseline"), metric_value(metrics, ch["metric"])
+        verdict = verdict_for(baseline, now_value)
+        if verdict == "reverted" and ch.get("id") in went_live:
+            retire(ch["id"], "retro: its metric did not improve")
+        out.append({"id": ch.get("id"), "metric": ch["metric"], "baseline": baseline, "now": now_value,
+                    "verdict": verdict})
     return out, 0
 
 
@@ -184,7 +257,7 @@ def discovered_projects():
     return [p["project"] for p in scan.discover()]
 
 
-def private_words():
+def private_words(own_project=None):
     projects = {r.get("project") for r in overlay.read_jsonl(overlay.history_file()) if r.get("project")}
     projects.update(discovered_projects())
     words = {Path(p).name.lower() for p in projects}
@@ -192,39 +265,109 @@ def private_words():
         words.update(w.strip().lower() for w in (overlay.state_dir() / "private-words.txt").read_text().splitlines())
     except OSError:
         pass
-    return sorted(w for w in words if len(w) >= 4 and w not in PUBLIC_NAMES)
+    own = Path(own_project).name.lower() if own_project else None
+    return sorted(w for w in words if len(w) >= 4 and w not in PUBLIC_NAMES and w != own)
 
 
-def scrub(paths, strict):
-    patterns = [HOME_PATH, EMAIL]
+def scrub_patterns(strict, own_project=None):
+    patterns = list(SCRUB_PATTERNS)
     if strict:
-        patterns += [re.compile(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", re.I) for w in private_words()]
+        patterns += [("project name", re.compile(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", re.I), True)
+                     for w in private_words(own_project)]
+    return patterns
+
+
+def scrub_text(label, text, patterns):
     hits = []
-    for path in paths:
-        for n, line in enumerate(Path(path).read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
-            for rx in patterns:
-                hits += [{"file": str(path), "line": n, "match": m.group(0)} for m in rx.finditer(line)]
+    for n, line in enumerate(text.splitlines(), 1):
+        seen = overlay.squash(line)  # NFKC and zero-width marks gone, so a split path still matches
+        for name, rx, echo in patterns:
+            for m in rx.finditer(seen):
+                hits.append({"file": str(label), "line": n, "pattern": name, **({"match": m.group(0)} if echo else {})})
     return hits
 
 
+def read_text_file(path):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, ValueError) as err:
+        raise CheckError(f"cannot read {path}: {err}") from err
+
+
 def cmd_scrub(paths, strict):
-    hits = scrub(paths, strict)
+    patterns = scrub_patterns(strict)
+    hits = [h for p in paths for h in scrub_text(p, read_text_file(p), patterns)]
     return {"hits": hits}, 1 if hits else 0
 
 
+def retro_date(window):
+    """The ISO date of window.until, or CheckError. It names the published file, so it must be a plain date."""
+    until = window.get("until") if isinstance(window, dict) else None
+    try:
+        return datetime.fromisoformat(str(until).replace("Z", "+00:00")).date().isoformat()
+    except ValueError as err:
+        raise CheckError(f"window.until must be an ISO date, got {until!r}") from err
+
+
+def checked_source(report):
+    """The report path, when it is a real file inside <state>/retros/. A symlink is refused."""
+    src = Path(report)
+    if src.is_symlink():
+        raise CheckError(f"{report} is a symlink")
+    allowed = (overlay.state_dir() / "retros").resolve()
+    if not src.is_file() or allowed not in src.resolve().parents:
+        raise CheckError(f"the report must be a file inside {allowed}")
+    return src
+
+
+def checked_retros_dir(project):
+    """<project>/docs/factory/retros, created if needed. The project needs docs/factory, and no part may be a symlink."""
+    factory = Path(project) / "docs" / "factory"
+    if not factory.is_dir():
+        raise CheckError(f"{project} has no docs/factory folder")
+    retros = factory / "retros"
+    if any(p.is_symlink() for p in (factory.parent, factory, retros)):
+        raise CheckError("docs, docs/factory and retros may not be symlinks")
+    retros.mkdir(exist_ok=True)
+    return retros
+
+
+def write_atomically(dest, data):
+    fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), prefix=f"{dest.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(data)
+        os.replace(tmp_name, dest)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
 def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
-    hits = scrub([report], strict=False)
+    if not SHA.fullmatch(sha):
+        raise CheckError("--sha must be 7 to 40 lowercase hex characters")
+    metrics = load_json(metrics_path, dict)
+    window = metrics.get("window")
+    date = retro_date(window)
+    changes = load_json(changes_path, list)
+    verdicts = load_json(verdicts_path, list) if verdicts_path else []
+    if not all(isinstance(c, dict) for c in changes + verdicts):
+        raise CheckError("changes and verdicts must be lists of objects")
+    data = checked_source(report).read_bytes()  # read once: what is scrubbed is what is written
+    try:
+        text = data.decode("utf-8")
+    except ValueError as err:
+        raise CheckError(f"{report} is not UTF-8 text") from err
+    hits = scrub_text(report, text, scrub_patterns(strict=True, own_project=project))
     if hits:
         return {"published": False, "hits": hits}, 1
-    metrics = json.loads(Path(metrics_path).read_text())
-    changes = json.loads(Path(changes_path).read_text())
-    verdicts = json.loads(Path(verdicts_path).read_text()) if verdicts_path else []
+    retros = checked_retros_dir(project)
+    dest = retros / f"{date}-{sha[:7]}.md"
+    if dest.is_symlink() or dest.resolve().parent != retros.resolve():
+        raise CheckError(f"{dest} is outside {retros} or a symlink")
     for ch in changes:
         ch["baseline"] = metric_value(metrics, ch.get("metric", ""))
-    window = metrics.get("window") or {}
-    dest = Path(project) / "docs" / "factory" / "retros" / f"{str(window.get('until', ''))[:10]}-{sha[:7]}.md"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(report, dest)
+    write_atomically(dest, data)
     history = overlay.read_jsonl(overlay.history_file())
     history.append({"project": project, "sha": sha, "since": window.get("since"), "until": window.get("until"),
                     "headline": metrics.get("headline"), "changes": changes, "previous": verdicts})
@@ -232,13 +375,13 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
     return {"published": True, "path": str(dest)}, 0
 
 
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(description="Retro Engine checks and overlay writer.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("apply")
     p.add_argument("candidates")
-    p.add_argument("--mode", choices=("draft", "auto-fix"))
-    for name in ("approve", "drop", "retire"):
+    p.add_argument("--mode", choices=("draft",))
+    for name in USER_ONLY:
         sub.add_parser(name).add_argument("id")
     p = sub.add_parser("verdicts")
     p.add_argument("--project", required=True)
@@ -252,23 +395,35 @@ def main(argv=None):
     for flag in ("--project", "--sha", "--metrics", "--changes"):
         p.add_argument(flag, required=True)
     p.add_argument("--verdicts")
-    a = ap.parse_args(argv)
+    return ap
+
+
+def run(a):
+    if a.cmd in USER_ONLY and os.environ.get(HEADLESS_ENV) == "1":
+        raise CheckError(f"{a.cmd} is for the user: refused while {HEADLESS_ENV}=1")
     if a.cmd == "apply":
-        out, code = cmd_apply(a.candidates, a.mode)
-    elif a.cmd == "approve":
-        out, code = cmd_approve(a.id)
-    elif a.cmd == "drop":
-        out, code = cmd_drop(a.id)
-    elif a.cmd == "retire":
-        out, code = cmd_retire(a.id)
-    elif a.cmd == "verdicts":
-        out, code = cmd_verdicts(str(Path(a.project).resolve()), a.metrics)
-    elif a.cmd == "lessons":
-        out, code = cmd_lessons()
-    elif a.cmd == "scrub":
-        out, code = cmd_scrub(a.files, a.strict)
-    else:
-        out, code = cmd_publish(a.report, str(Path(a.project).resolve()), a.sha, a.metrics, a.changes, a.verdicts)
+        return cmd_apply(a.candidates, a.mode)
+    if a.cmd == "approve":
+        return cmd_approve(a.id)
+    if a.cmd == "drop":
+        return cmd_drop(a.id)
+    if a.cmd == "retire":
+        return cmd_retire(a.id)
+    if a.cmd == "verdicts":
+        return cmd_verdicts(str(Path(a.project).resolve()), a.metrics)
+    if a.cmd == "lessons":
+        return cmd_lessons()
+    if a.cmd == "scrub":
+        return cmd_scrub(a.files, a.strict)
+    return cmd_publish(a.report, str(Path(a.project).resolve()), a.sha, a.metrics, a.changes, a.verdicts)
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
+    try:
+        out, code = run(a)
+    except (CheckError, OSError, ValueError) as err:  # a clear message and exit 2, never a traceback
+        out, code = {"error": str(err)}, 2
     print(json.dumps(out, indent=1, ensure_ascii=False))
     return code
 
