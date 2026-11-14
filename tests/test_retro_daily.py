@@ -15,15 +15,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_TOOLS = ",".join([
     "Read", "Grep", "Glob",
-    "Bash(python3 /opt/plugin/scripts/retro-scan --project *)",
     "Bash(python3 /opt/plugin/scripts/retro-check apply *)",
     "Bash(python3 /opt/plugin/scripts/retro-check verdicts --project *)",
     "Bash(python3 /opt/plugin/scripts/retro-check lessons)",
     "Bash(python3 /opt/plugin/scripts/retro-check scrub *)",
     "Bash(python3 /opt/plugin/scripts/retro-check publish *)",
-    "Write(//h/.claude/software-factory/retros/**)", "Edit(//h/.claude/software-factory/retros/**)",
-    "Write(//h/.claude/software-factory/upstream/**)", "Edit(//h/.claude/software-factory/upstream/**)",
+    "Edit(//h/.software-factory/retros/2026-11-14/work/**)",
+    "Edit(//h/.software-factory/upstream/**)",
 ])
+STATE_H = Path("/h/.software-factory")
+RUN_H = STATE_H / "retros" / "2026-11-14"
 
 
 def load(name):
@@ -43,6 +44,7 @@ class RetroDailyTests(unittest.TestCase):
         self.base = Path(os.path.realpath(self.tmp.name))
         self.state = self.base / "state"
         self.daily = load("retro-daily")
+        self.scan_code = 0
         env = mock.patch.dict(os.environ, {"SOFTWARE_FACTORY_HOME": str(self.state)})
         env.start()
         self.addCleanup(env.stop)
@@ -58,11 +60,15 @@ class RetroDailyTests(unittest.TestCase):
         scan = done(0, json.dumps([{"project": p, "sha": "abc1234", "since": "2026-11-01"} for p in due]))
         agents = iter(agent_codes)
         calls = []
+        self.scans = []
 
         def fake_run(cmd, **kw):
             if cmd[0] == "claude":
                 calls.append((cmd, kw))
                 return done(next(agents))
+            if "--project" in cmd:
+                self.scans.append(cmd)
+                return done(self.scan_code)
             return scan
 
         with mock.patch.object(self.daily.subprocess, "run", side_effect=fake_run):
@@ -81,28 +87,49 @@ class RetroDailyTests(unittest.TestCase):
         self.assertFalse((self.state / "retro-failed").exists())
 
     def test_allowed_tools_string_is_exact(self):  # R7
-        tools = self.daily.allowed_tools(Path("/opt/plugin"), Path("/h/.claude/software-factory"))
-        self.assertEqual(tools, EXPECTED_TOOLS)
+        self.assertEqual(self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H), EXPECTED_TOOLS)
 
-    def test_allowed_tools_have_no_wildcard_check_no_network_and_no_state_wide_write(self):  # #172, #154, R6
-        rules = self.daily.allowed_tools(Path("/opt/plugin"), Path("/h/s")).split(",")
+    def test_allowed_tools_have_no_wildcard_check_no_network_scan_or_launcher_file_write(self):  # #172, #154, #192
+        rules = self.daily.allowed_tools(Path("/opt/plugin"), STATE_H, RUN_H).split(",")
         self.assertNotIn("Bash(python3 /opt/plugin/scripts/retro-check *)", rules)
-        self.assertFalse([r for r in rules if r.startswith("Bash(") and "retro-" not in r])
-        for banned in ("WebFetch", "WebSearch", "mcp__", "git", "gh ", "curl"):
+        self.assertFalse([r for r in rules if r.startswith("Bash(") and "retro-check" not in r])
+        for banned in ("WebFetch", "WebSearch", "mcp__", "git", "gh ", "curl", "retro-scan", "Write("):
             self.assertFalse([r for r in rules if banned in r], banned)
-        writes = [r for r in rules if r.startswith(("Write(", "Edit("))]
-        self.assertEqual(sorted(r.split("/h/s/")[1] for r in writes), ["retros/**)", "retros/**)", "upstream/**)", "upstream/**)"])
-        for guarded in ("overlay", "retro-settings.json", "retro-failed", "retro-metrics.jsonl"):
-            self.assertFalse([r for r in writes if guarded in r], guarded)
+        edits = [r for r in rules if r.startswith("Edit(")]
+        self.assertEqual(len(edits), 2)
+        for guarded in ("overlay", "retro-settings.json", "retro-failed", "metrics", "due.json", "alpha.json"):
+            self.assertFalse([r for r in edits if guarded in r], guarded)
+        self.assertFalse([r for r in edits if r.endswith("/2026-11-14/**)")])  # work/ only, not the whole run folder
 
-    def test_headless_marker_is_set_for_the_agent_and_due_json_lists_project_paths(self):
+    def test_headless_call_is_locked_down_and_the_scan_is_made_by_the_launcher(self):  # #193, #192
         code, calls = self.run_main(["/w/alpha"], [0])
         (cmd, kw), = calls
-        self.assertEqual((code, kw["env"]["RETRO_HEADLESS"]), (0, "1"))
-        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], self.daily.allowed_tools(Path("/opt/plugin"), self.state))
         run_dir = next((self.state / "retros").iterdir())
+        prompt = cmd[2]
+        self.assertEqual(code, 0)
+        self.assertEqual(cmd, ["claude", "-p", prompt, "--plugin-dir", "/opt/plugin", "--agent", "software-factory:retro",
+                               "--permission-mode", "dontAsk", "--setting-sources", "project", "--strict-mcp-config",
+                               "--disallowedTools", "WebFetch,WebSearch,Agent,mcp__*",
+                               "--allowedTools", self.daily.allowed_tools(Path("/opt/plugin"), self.state, run_dir)])
+        self.assertEqual(kw["cwd"], str(run_dir))
+        self.assertIn(f"Scan file (already made, read it): {run_dir}/alpha.json", prompt)
         self.assertEqual(json.loads((run_dir / "due.json").read_text()), ["/w/alpha"])
-        self.assertIn(f"Run folder: {run_dir}/", cmd[-1])
+        self.assertTrue((run_dir / "work").is_dir())
+        scan_cmd = self.scans[0]
+        self.assertEqual(scan_cmd[2:], ["--project", "/w/alpha", "--since", "2026-11-01", "--out", str(run_dir / "alpha.json")])
+
+    def test_child_env_marks_headless_and_drops_the_scrub_variable(self):  # #193 spike
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}):
+            _, calls = self.run_main(["/w/alpha"], [0])
+        env = calls[0][1]["env"]
+        self.assertEqual(env["RETRO_HEADLESS"], "1")
+        self.assertNotIn("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", env)
+
+    def test_a_failed_project_scan_skips_that_agent_run_only(self):
+        self.scan_code = 2
+        code, calls = self.run_main(["/w/alpha"], [])
+        self.assertEqual((code, calls), (1, []))
+        self.assertEqual((self.state / "retro-failed").read_text(), "scan-failed 2\n")
 
     def test_one_failing_project_does_not_stop_the_others_and_marker_holds_no_child_output(self):
         code, calls = self.run_main(["/w/alpha", "/w/beta", "/w/gamma"], [0, 3, 0])

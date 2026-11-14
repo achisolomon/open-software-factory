@@ -21,7 +21,7 @@ MARKER = "# software-factory-retro"
 
 
 def state_dir():
-    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".claude" / "software-factory")
+    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
 
 
 def plist(launcher, hour, path_env, log):

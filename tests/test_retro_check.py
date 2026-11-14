@@ -525,24 +525,49 @@ class CheckCliTests(unittest.TestCase):
         self.assertEqual(self.rows("entries")[0]["status"], "retired")
         self.check("approve", "missing", code=1)
 
+    @property
+    def run_dir(self):
+        return self.state / "retros" / "2026-11-14"
+
     def metrics(self, **headline):
-        path = self.base / "m.json"
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        path = self.run_dir / "m.json"
         path.write_text(json.dumps({"sessions": 2, "window": {"since": "2026-11-13T00:00:00+00:00",
                                                               "until": "2026-11-14T00:00:00+00:00"},
                                     "headline": dict({"errors": 10}, **headline), "sandbox_off": {"rtk gh": 6}}))
         return path
 
     def report(self, text="# Retro\n\n3 sandbox-off gh calls per session.\n"):
-        """A report where publish expects it: <state>/retros/."""
-        path = self.state / "retros" / "r.md"
+        """A report where publish expects it: <state>/retros/<day>/work/, with the launcher's due.json one level up."""
+        path = self.run_dir / "work" / "r.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
-        (path.parent / "due.json").write_text(json.dumps([str(self.project)]))
+        (self.run_dir / "due.json").write_text(json.dumps([str(self.project)]))
         return path
 
     def scan_file(self, **fields):
-        (self.state / "retros").mkdir(parents=True, exist_ok=True)
-        (self.state / "retros" / "acme.json").write_text(json.dumps(fields))
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "acme.json").write_text(json.dumps(fields))
+
+    def test_publish_cannot_be_defeated_from_the_agent_folder(self):  # #192, Test's bypass cases
+        other = self.base / "work" / "other-app"
+        (other / "docs" / "factory").mkdir(parents=True)
+        report = self.report()
+        (report.parent / "due.json").write_text(json.dumps([str(other)]))  # agent-made list: ignored
+        self.assertIn("due.json", self.publish(report=report, project=other, code=2)["error"])
+        self.scan_file(review_samples=["please rename this helper before we merge it"])
+        (report.parent / "acme.json").write_text("{}")  # agent-made blank scan: ignored
+        copy = self.report("# Retro\n\nHe asked: please rename this helper before we merge it today.\n")
+        self.assertIn("copies", self.publish(report=copy, code=2)["error"])
+
+    def test_publish_refuses_a_report_outside_work_and_metrics_from_the_agent_folder(self):  # #192
+        self.report()
+        loose = self.run_dir / "r.md"
+        loose.write_text("# Retro\n")
+        self.assertIn("work", self.publish(report=loose, code=2)["error"])
+        forged = self.report().parent / "m.json"
+        forged.write_text(self.metrics().read_text())
+        self.assertIn("--metrics", self.publish(metrics=forged, code=2)["error"])
 
     def test_publish_refuses_a_report_copying_eight_words_of_raw_text(self):  # N1
         self.scan_file(user_messages={"correction": ["no, the pricing page for Dana is wrong again today ok"]},
@@ -572,7 +597,7 @@ class CheckCliTests(unittest.TestCase):
         (other / "docs" / "factory").mkdir(parents=True)
         self.assertIn("due.json", self.publish(project=other, code=2)["error"])
         report = self.report()
-        (report.parent / "due.json").unlink()
+        (self.run_dir / "due.json").unlink()
         self.assertIn("due.json", self.publish(report=report, code=2)["error"])
         self.assertFalse((other / "docs" / "factory" / "retros").exists())
 
@@ -789,7 +814,8 @@ class CheckCliTests(unittest.TestCase):
         self.assertFalse((self.project / "docs" / "factory" / "retros").exists())
 
     def metrics_with(self, window):
-        path = self.base / "mw.json"
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        path = self.run_dir / "mw.json"
         path.write_text(json.dumps({"sessions": 1, "window": window, "headline": {}}))
         return path
 
@@ -827,17 +853,17 @@ class CheckCliTests(unittest.TestCase):
         bare = self.base / "work" / "bare"
         bare.mkdir()
         report = self.report()
-        (report.parent / "due.json").write_text(json.dumps([str(bare)]))
+        (self.run_dir / "due.json").write_text(json.dumps([str(bare)]))
         self.assertIn("docs/factory", self.publish(report=report, project=bare, code=2)["error"])
 
     def test_publish_refuses_a_report_outside_the_state_retros_folder_or_a_symlink(self):  # #173
         outside = self.base / "r.md"
         outside.write_text("fine\n")
-        self.assertIn("inside", self.publish(report=outside, code=2)["error"])
+        self.assertIn("must be a file", self.publish(report=outside, code=2)["error"])
         link = self.report().with_name("link.md")
         link.symlink_to(outside)
         self.assertIn("symlink", self.publish(report=link, code=2)["error"])
-        self.assertIn("inside", self.publish(report=self.state / "retros" / "missing.md", code=2)["error"])
+        self.assertIn("must be a file", self.publish(report=self.state / "retros" / "missing.md", code=2)["error"])
 
     def test_publish_refuses_secrets_without_echoing_them_and_other_project_names(self):  # #175
         self.history([{"project": str(self.project)}, {"project": "/w/globex-app"}])
@@ -981,7 +1007,7 @@ class RetroAgentFileTests(unittest.TestCase):
 
     def test_agent_hands_every_write_to_the_scripts(self):
         self.assertIn("model: sonnet", self.text)
-        for needle in ("retro-scan --project", "retro-check apply", "retro-check publish", "retro-check verdicts",
+        for needle in ("retro-check apply", "retro-check publish", "retro-check verdicts",
                        "retro-check scrub", "Never write the overlay files yourself"):
             self.assertIn(needle, self.text)
         self.assertNotIn("—", self.text)
@@ -993,7 +1019,7 @@ class RetroAgentFileTests(unittest.TestCase):
 
     def test_agent_never_runs_the_user_only_subcommands(self):
         for needle in ("never run `retro-check approve`", "`drop`", "`retire`", "Nothing goes live by itself",
-                       "you write only inside it", "`retro-settings.json`", "`retro-failed`"):
+                       "you write only inside `<run>/work/`","`retro-settings.json`", "`retro-failed`"):
             self.assertIn(needle.lower(), self.text.lower())
 
     def test_every_required_rule_is_in_the_agent_text(self):  # #187: removing any one phrase fails here

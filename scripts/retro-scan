@@ -10,7 +10,7 @@ Usage:
 A factory project is a folder holding docs/factory/status.md. Sessions in its worktrees (.claude/worktrees/*,
 .worktrees/*, or a live worktree anywhere) count for the parent repo. Other sessions are never read.
 
-Env: CLAUDE_PROJECTS_DIR (default ~/.claude/projects), SOFTWARE_FACTORY_HOME (default ~/.claude/software-factory),
+Env: CLAUDE_PROJECTS_DIR (default ~/.claude/projects), SOFTWARE_FACTORY_HOME (default ~/.software-factory),
 CLAUDE_USER_SETTINGS (default ~/.claude/settings.json, read for ask rules). Stdlib only, Python 3.9+.
 """
 

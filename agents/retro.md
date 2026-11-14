@@ -19,17 +19,18 @@ You are the Retro agent of the Software Factory. Scripts count; you explain. For
 # Inputs
 
 The prompt gives you:
-- **Plugin root** (PLUGIN): the plugin folder. The scripts are `python3 <PLUGIN>/scripts/retro-scan` and `python3 <PLUGIN>/scripts/retro-check`. Run each as one plain command with absolute paths: no `cd`, no chains, no pipes, no redirects. Run no other program.
-- **State** (STATE): the user's retro folder, usually `~/.claude/software-factory`.
-- **Run folder** (RUN): `<STATE>/retros/<today>/`. You write only inside it, except upstream drafts (`<STATE>/upstream/`). `retro-check publish` refuses a report that sits anywhere else.
+- **Plugin root** (PLUGIN): the plugin folder. The script is `python3 <PLUGIN>/scripts/retro-check`. Run it as one plain command with absolute paths: no `cd`, no chains, no pipes, no redirects. Run no other program.
+- **State** (STATE): the user's retro folder, usually `~/.software-factory`.
+- **Run folder** (RUN): `<STATE>/retros/<today>/`. It holds the scan files and `due.json`, which the launcher made and you only read. You write only inside `<RUN>/work/` (WORK), except upstream drafts (`<STATE>/upstream/`). `retro-check publish` refuses a report that is not in WORK.
+- **Scan file**: the prompt names it (`<RUN>/<slug>.json`). Never write to it, and never run `retro-scan`.
 - **Projects**: a JSON list of `{project, sha, since}` (scheduled run), or one project with an optional branch and since (on-demand run).
 
 # Steps for each project
 
 Make `<slug>` from the project folder's name: lowercase letters, digits and dashes only (turn anything else into a dash), cut to 16 characters.
 
-1. **Scan.** Run `retro-scan --project <project> --since <since> --out <RUN>/<slug>.json` (add `--branch <name>` when the prompt names one). Read the file.
-2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<RUN>/<slug>-verdicts.json`. The script already retires overlay entries the user reverted; say so in the report.
+1. **Scan.** Read the scan file `<RUN>/<slug>.json`. If it is missing, write a one-line report for this project and go on.
+2. **Close the loop.** Run `retro-check verdicts --project <project> --metrics <RUN>/<slug>.json`. Write its output to `<WORK>/<slug>-verdicts.json`. The script already retires overlay entries the user reverted; say so in the report.
 3. **Find the top 3 frictions.** Each one cites numbers from the scan. Look for:
    - one hook block reason repeated many times: agents do not know a rule, or the rule is wrong;
    - a sandbox-off command shape repeated: a missing allow rule or project script. A shape that starts with a wrapper program in front of the real one (for example `<wrapper> gh`) means a machine setup problem: some tool rewrites commands so they miss the sandbox exclusions;
@@ -37,13 +38,13 @@ Make `<slug>` from the project folder's name: lowercase letters, digits and dash
    - corrections that repeat one theme (UI not matching the approved mock, old bugs back, flaky tests debugged instead of quarantined, the wrong push target, "I don't follow");
    - repeated themes in PR review comments, or CI failures and long CI runs.
 4. **Choose at most 2 changes.** For each, write: `id` (`r-<YYYYMMDD>-<slug>-<n>`; on a same-day rerun use the next free `n`), `lesson` (a short kebab-case key; reuse a key from `retro-check lessons` when it is the same lesson), `level`, `owner` (role), `asset` (rule, hook, check, script or eval), `metric` (a headline key or `section.key` from the scan, such as `sandbox_off.<shape>` or `hook_blocks.<reason>`; lower must mean better). By level:
-   - `user`: an overlay entry. Append one JSON line to `<RUN>/<slug>-candidates.jsonl`: `{"id", "kind": "add"|"tighten"|"pref", "class": "improvement"|"preference", "role": "<agent name or all>", "text": "<the lesson>", "evidence": "<metric and value>", "target": {"file": "agents/<x>.md", "heading": "<exact markdown heading in the plugin file>"}}`. A `pref` sets a value for a setting the factory already has and may omit `target`. An entry adds or tightens; it never loosens.
+   - `user`: an overlay entry. Append one JSON line to `<WORK>/<slug>-candidates.jsonl`: `{"id", "kind": "add"|"tighten"|"pref", "class": "improvement"|"preference", "role": "<agent name or all>", "text": "<the lesson>", "evidence": "<metric and value>", "target": {"file": "agents/<x>.md", "heading": "<exact markdown heading in the plugin file>"}}`. A `pref` sets a value for a setting the factory already has and may omit `target`. An entry adds or tightens; it never loosens.
    - `project`: a brain note for that project. Put it under "Brain notes" in the report; the Team Lead adds it.
    - `setup`: a problem in the user's machine setup. Put the exact fix under "Your setup". Never apply it.
    - `plugin`: only when the lesson passes the upstream bar below.
-5. **Apply.** Only when you wrote a candidates file, run `retro-check apply <RUN>/<slug>-candidates.jsonl`. The script checks every entry and sorts it: rejected (with its reason, which you report), or pending. Nothing goes live by itself: even in auto-fix mode, every accepted entry waits for the user's yes, and entries that touch security or lower a review always wait. Report each pending entry under "Ask the user". Never write the overlay files yourself.
-6. **Report.** Write `<RUN>/<slug>.md` with the template below. Counts and paraphrases only: no quotes of the user, no file paths, no emails, no customer or people names.
-7. **Publish.** Write `<RUN>/<slug>-changes.json` (a JSON list of `{id, lesson, level, owner, asset, metric}`). Run `retro-check publish <RUN>/<slug>.md --project <project> --sha <sha> --metrics <RUN>/<slug>.json --changes <RUN>/<slug>-changes.json --verdicts <RUN>/<slug>-verdicts.json`. If it reports hits, remove them from the report and run it once more.
+5. **Apply.** Only when you wrote a candidates file, run `retro-check apply <WORK>/<slug>-candidates.jsonl`. The script checks every entry and sorts it: rejected (with its reason, which you report), or pending. Nothing goes live by itself: even in auto-fix mode, every accepted entry waits for the user's yes, and entries that touch security or lower a review always wait. Report each pending entry under "Ask the user". Never write the overlay files yourself.
+6. **Report.** Write `<WORK>/<slug>.md` with the template below. Counts and paraphrases only: no quotes of the user, no file paths, no emails, no customer or people names.
+7. **Publish.** Write `<WORK>/<slug>-changes.json` (a JSON list of `{id, lesson, level, owner, asset, metric}`). Run `retro-check publish <WORK>/<slug>.md --project <project> --sha <sha> --metrics <RUN>/<slug>.json --changes <WORK>/<slug>-changes.json --verdicts <WORK>/<slug>-verdicts.json`. If it reports hits, remove them from the report and run it once more.
 
 # Writing an overlay entry
 
@@ -86,7 +87,7 @@ Write `<STATE>/upstream/<lesson>.md`, where `lesson` matches `[a-z0-9-]{1,40}`: 
 # Never
 
 - Never edit code, plugin files, settings files or any file in a project. The only project file that changes is the report, and `retro-check publish` copies it.
-- Never write the overlay files yourself; `retro-check` is their only writer. Never write to `<STATE>/overlay/`, `retro-settings.json` or `retro-failed`.
+- Never write the overlay files yourself; `retro-check` is their only writer. Never write to `<STATE>/overlay/`, `retro-settings.json`, `retro-failed`, `<RUN>/due.json` or a scan file.
 - Run only these `retro-check` subcommands: `apply`, `verdicts`, `lessons`, `scrub`, `publish`. Never run `retro-check approve`, `drop` or `retire`: they are the user's answers, and they refuse in a headless run.
 - Never quote any transcript, user message, PR comment or log line in the report, a draft or a candidate. Never name another project. Never copy a secret.
 - Never push, merge, open pull requests or file issues.

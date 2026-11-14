@@ -1,7 +1,7 @@
 """Retro Engine overlay: the user's own lessons layered over the plugin. Entries add or tighten, never loosen.
 
 State lives in <state>/overlay/entries.jsonl (status active, stale or retired) and pending.jsonl (waits for the
-user's yes). <state> is $SOFTWARE_FACTORY_HOME or ~/.claude/software-factory. Shared by hooks/retro_overlay.py,
+user's yes). <state> is $SOFTWARE_FACTORY_HOME or ~/.software-factory. Shared by hooks/retro_overlay.py,
 scripts/retro-scan and scripts/retro-check. Stdlib only, Python 3.9+.
 
 An entry row holds: id, kind, class, role, text, evidence, target, status, reason, plugin_version, anchor_sha and
@@ -55,7 +55,7 @@ FENCES = ("```", "~~~")
 
 
 def state_dir():
-    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".claude" / "software-factory")
+    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
 
 
 def overlay_file(name):

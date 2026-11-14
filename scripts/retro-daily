@@ -2,8 +2,9 @@
 """Daily retro launcher, started by launchd or cron (see retro-schedule). The model runs only when a project is due.
 
 Finds the newest installed plugin copy (the cache path changes with every update), runs retro-scan --due, writes the due
-project paths to <state>/retros/<today>/due.json (retro-check publish reads it), and starts one headless Retro run per due
-project, so one failing project does not stop the others. A failure leaves <state>/retro-failed, which holds only a fixed
+project paths to <state>/retros/<today>/due.json (retro-check publish reads it), runs retro-scan itself for each due
+project into the same folder, and starts one headless Retro run per project, so one failing project does not stop the
+others. The agent may write only <run>/work/ and <state>/upstream/; the launcher's files are out of its reach (#192). A failure leaves <state>/retro-failed, which holds only a fixed
 status word and an exit code, never child output (the full output is in <state>/retro.log). Stdlib only, Python 3.9+.
 """
 
@@ -17,10 +18,12 @@ import sys
 
 SCAN_TIMEOUT = 1800
 AGENT_TIMEOUT = 3600
+WORK_DIR = "work"  # the agent's only run subfolder; keep in step with retro-check
+DISALLOWED = "WebFetch,WebSearch,Agent,mcp__*"
 
 
 def state_dir():
-    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".claude" / "software-factory")
+    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
 
 
 def version_key(path):
@@ -38,20 +41,23 @@ def plugin_root():
     return here if (here / "agents" / "retro.md").is_file() else newest_plugin()
 
 
-def allowed_tools(root, state):
-    """One rule per allowed command. No network, git or MCP tools; writes only in retros/ and upstream/ (#154, #172)."""
-    scan, check = f"Bash(python3 {root}/scripts/retro-scan", f"Bash(python3 {root}/scripts/retro-check"
+def allowed_tools(root, state, run_dir):
+    """One rule per allowed command. No network, git, MCP or scan tool. Edit rules (the only ones that grant writes)
+    cover <run>/work and upstream/ and nothing else, so the launcher's files stay out of reach (#154, #172, #192)."""
+    check = f"Bash(python3 {root}/scripts/retro-check"
     rules = ["Read", "Grep", "Glob",
-             f"{scan} --project *)",
              f"{check} apply *)",
              f"{check} verdicts --project *)",
              f"{check} lessons)",
              f"{check} scrub *)",
              f"{check} publish *)"]
-    for folder in ("retros", "upstream"):
-        # Absolute paths in permission rules take a leading '//'.
-        rules += [f"Write(/{state}/{folder}/**)", f"Edit(/{state}/{folder}/**)"]
+    # Absolute paths in permission rules take a leading '//'.
+    rules += [f"Edit(/{folder}/**)" for folder in (run_dir / WORK_DIR, state / "upstream")]
     return ",".join(rules)
+
+
+def slug_of(project):
+    return re.sub(r"[^a-z0-9]", "-", Path(project).name.lower())[:16]
 
 
 def fail(state, words):
@@ -80,16 +86,46 @@ def scan_due(root):
     return due, None
 
 
+def scan_project(root, run_dir, project):
+    """Failure word, or None when the launcher wrote <run>/<slug>.json. The agent cannot write that file (#192)."""
+    cmd = [sys.executable, str(root / "scripts" / "retro-scan"), "--project", project["project"],
+           "--since", project.get("since", ""), "--out", str(run_dir / f"{slug_of(project['project'])}.json")]
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "scan-timeout"
+    return f"scan-failed {run.returncode}" if run.returncode else None
+
+
+def agent_command(root, state, run_dir, prompt):
+    """Headless call, locked down (#193): no user or local settings, no MCP, no network, no sub-agents, no prompts."""
+    return ["claude", "-p", prompt, "--plugin-dir", str(root), "--agent", "software-factory:retro",
+            "--permission-mode", "dontAsk", "--setting-sources", "project", "--strict-mcp-config",
+            "--disallowedTools", DISALLOWED, "--allowedTools", allowed_tools(root, state, run_dir)]
+
+
+def agent_env():
+    """The scrub variable makes Claude Code ignore --permission-mode (spike), so the child must not inherit it."""
+    env = dict(os.environ, RETRO_HEADLESS="1")
+    env.pop("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", None)
+    return env
+
+
 def run_agent(root, state, run_dir, project, log):
     """Failure word, or None when the headless run succeeded."""
+    slug = slug_of(project["project"])
+    problem = scan_project(root, run_dir, project)
+    if problem:
+        return problem
+    (run_dir / WORK_DIR).mkdir(exist_ok=True)
     prompt = (f"Scheduled retro. Plugin root: {root}. State: {state}. Run folder: {run_dir}/. "
+              f"Scan file (already made, read it): {run_dir}/{slug}.json. Write only in {run_dir}/{WORK_DIR}/. "
               f"Projects (JSON): {json.dumps([project])}")
     try:
         with open(log, "a", encoding="utf-8") as out:
-            run = subprocess.run(["claude", "-p", "--agent", "software-factory:retro",
-                                  "--allowedTools", allowed_tools(root, state), prompt],
-                                 stdout=out, stderr=subprocess.STDOUT, cwd=str(state), timeout=AGENT_TIMEOUT,
-                                 env=dict(os.environ, RETRO_HEADLESS="1"))
+            run = subprocess.run(agent_command(root, state, run_dir, prompt),
+                                 stdout=out, stderr=subprocess.STDOUT, cwd=str(run_dir), timeout=AGENT_TIMEOUT,
+                                 env=agent_env())
     except subprocess.TimeoutExpired:
         return "agent-timeout"
     except OSError:
@@ -110,7 +146,8 @@ def main():
     run_dir = state / "retros" / datetime.date.today().isoformat()
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "due.json").write_text(json.dumps([d["project"] for d in due]) + "\n", encoding="utf-8")
-    failures = [w for w in (run_agent(root, state, run_dir, d, state / "retro.log") for d in due) if w]
+    log = state / "retro.log"
+    failures = [w for w in (run_agent(root, state, run_dir, d, log) for d in due) if w]
     if failures:
         return fail(state, failures)
     (state / "retro-failed").unlink(missing_ok=True)

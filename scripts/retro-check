@@ -20,8 +20,10 @@
   retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
                                                         scrub the report (strict, minus P's own name), write it to
                                                         <P>/docs/factory/retros/ and append the history row. REPORT
-                                                        must sit in <state>/retros/<day>/ next to a due.json (list of
-                                                        due project paths) that names P. Refused (exit 2) when a change
+                                                        must sit in <state>/retros/<day>/work/. The run folder above
+                                                        it holds the launcher's due.json (list of due project paths)
+                                                        that names P, and the scan file that --metrics must be.
+                                                        Refused (exit 2) when a change
                                                         lesson is not [a-z0-9-]{1,40}, or when the report shares 8+
                                                         words in a row with a raw user message or PR comment sample in
                                                         a scan *.json in that folder
@@ -76,7 +78,8 @@ SHA = re.compile(r"[0-9a-f]{7,40}")
 USER_ONLY = ("approve", "drop", "retire")
 HEADLESS_ENV = "RETRO_HEADLESS"
 LESSON_KEY = re.compile(r"[a-z0-9-]{1,40}")
-DUE_FILE = "due.json"  # the launcher lists the due project paths here, next to the report
+DUE_FILE = "due.json"  # the launcher lists the due project paths here, in the run folder, out of the agent's reach
+WORK_DIR = "work"  # the only run subfolder the agent writes; the report sits here
 COPY_WORDS = 8  # a report may not share this many words in a row with raw scan text
 
 
@@ -334,9 +337,18 @@ def checked_source(report):
     if src.is_symlink():
         raise CheckError(f"{report} is a symlink")
     allowed = (overlay.state_dir() / "retros").resolve()
-    if not src.is_file() or allowed not in src.resolve().parents:
-        raise CheckError(f"the report must be a file inside {allowed}")
+    real = src.resolve()
+    if not src.is_file() or real.parent.name != WORK_DIR or real.parent.parent.parent != allowed:
+        raise CheckError(f"the report must be a file in {allowed}/<day>/{WORK_DIR}/")
     return src
+
+
+def checked_metrics(metrics_path, run_dir):
+    """The metrics file, when it is a scan file directly in the run folder, which the agent cannot write."""
+    path = Path(metrics_path)
+    if path.is_symlink() or path.resolve().parent != run_dir:
+        raise CheckError(f"--metrics must be a scan file directly in {run_dir}")
+    return path
 
 
 def checked_retros_dir(project):
@@ -362,9 +374,9 @@ def write_atomically(dest, data):
         raise
 
 
-def checked_project(report, project):
-    """CheckError unless project is in the run's due.json (a JSON list of project paths) next to the report."""
-    due = load_json(Path(report).parent / DUE_FILE, list)
+def checked_project(run_dir, project):
+    """CheckError unless project is in the run folder's due.json (a JSON list of project paths)."""
+    due = load_json(run_dir / DUE_FILE, list)
     if project not in {str(Path(p).resolve()) for p in due if isinstance(p, str)}:
         raise CheckError(f"{project} is not in {DUE_FILE} for this run")
 
@@ -407,15 +419,16 @@ def copied_lines(text, raw_texts):
 def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
     if not SHA.fullmatch(sha):
         raise CheckError("--sha must be 7 to 40 lowercase hex characters")
-    metrics = load_json(metrics_path, dict)
+    source = checked_source(report)
+    run_dir = source.resolve().parent.parent
+    metrics = load_json(checked_metrics(metrics_path, run_dir), dict)
     window = metrics.get("window")
     date = retro_date(window)
     changes = load_json(changes_path, list)
     verdicts = load_json(verdicts_path, list) if verdicts_path else []
     if not all(isinstance(c, dict) for c in changes + verdicts):
         raise CheckError("changes and verdicts must be lists of objects")
-    source = checked_source(report)
-    checked_project(report, project)
+    checked_project(run_dir, project)
     bad = [c["lesson"] for c in changes if "lesson" in c
            and not (isinstance(c["lesson"], str) and LESSON_KEY.fullmatch(c["lesson"]))]
     if bad:
@@ -428,7 +441,7 @@ def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path)
     hits = scrub_text(report, text, scrub_patterns(strict=True, own_project=project))
     if hits:
         return {"published": False, "hits": hits}, 1
-    copied = copied_lines(text, raw_scan_texts(Path(report).parent))
+    copied = copied_lines(text, raw_scan_texts(run_dir))
     if copied:
         raise CheckError(f"the report copies {COPY_WORDS}+ words of raw scan text on lines {copied}")
     retros = checked_retros_dir(project)
