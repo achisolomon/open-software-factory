@@ -48,7 +48,7 @@ The agents are checked too: 31 behavior evals and 338 offline tests guard their 
 
 Read-only lookups run on Haiku. To change the policy, see [Tips](#tips).
 
-Current version: 0.8.4. What changed in each release, newest first: [release notes](CHANGELOG.md).
+Current version: 0.9.0. What changed in each release, newest first: [release notes](CHANGELOG.md).
 
 ## Quick start
 
