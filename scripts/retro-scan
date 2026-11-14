@@ -429,7 +429,7 @@ def due():
 
 def out_problem(out):
     """Why --out is refused, or None. It must be a non-symlink path inside <state>/retros/."""
-    allowed = Path(os.path.realpath(overlay.state_dir() / "retros"))
+    allowed = Path(os.path.realpath(overlay.state_dir() / overlay.RUNS_DIR))
     if Path(out).is_symlink():
         return f"--out is a symlink: {out}"
     if allowed not in Path(os.path.realpath(out)).parents:
@@ -451,7 +451,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.due_out and not a.project:
         ap.error("--due-out needs --project")
-    for target in (a.out, a.due_out and str(Path(a.due_out) / "due.json")):
+    for target in (a.out, a.due_out and str(Path(a.due_out) / overlay.DUE_FILE)):
         problem = target and out_problem(target)
         if problem:
             print(json.dumps({"error": problem}))
@@ -475,7 +475,7 @@ def main(argv=None):
         print(f"retro-scan: skipped {len(SKIPPED)} unreadable transcript file(s)", file=sys.stderr)
     if a.due_out:  # the in-session retro cannot write this file itself (#198); same format as retro-daily
         Path(a.due_out).mkdir(parents=True, exist_ok=True)
-        (Path(a.due_out) / "due.json").write_text(json.dumps([root]) + "\n", encoding="utf-8")
+        (Path(a.due_out) / overlay.DUE_FILE).write_text(json.dumps([root]) + "\n", encoding="utf-8")
     text = json.dumps(result, indent=1, ensure_ascii=False)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)

@@ -185,6 +185,14 @@ class RetroOverlayHookTests(unittest.TestCase):
         (self.state / "upstream" / "lesson.md").write_text("draft\n")
         self.assertIn("0 change(s) wait for the user's yes and 1 upstream draft(s)", self.run_hook())
 
+    def test_withdrawn_upstream_drafts_are_not_announced_as_ready(self):  # architecture finding 10
+        (self.state / "upstream").mkdir()
+        (self.state / "upstream" / "pulled.md").write_text("withdrawn: scrub hits\n")
+        (self.state / "upstream" / "lesson.md").write_text("draft\n")
+        self.assertIn("0 change(s) wait for the user's yes and 1 upstream draft(s)", self.run_hook())
+        (self.state / "upstream" / "lesson.md").unlink()
+        self.assertNotIn("upstream draft", self.run_hook())
+
     def test_the_seven_day_boundary_with_a_fixed_clock(self):  # #183
         now = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
         rows = [self.live_entry("edge", (now - timedelta(days=7)).isoformat()),

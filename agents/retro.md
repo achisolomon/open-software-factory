@@ -88,7 +88,7 @@ Write `<STATE>/upstream/<lesson>.md`, where `lesson` matches `[a-z0-9-]{1,40}`: 
 
 - Never edit code, plugin files, settings files or any file in a project. The only project file that changes is the report, and `retro-check publish` copies it.
 - Never write the overlay files yourself; `retro-check` is their only writer. Never write to `<STATE>/overlay/`, `retro-settings.json`, `retro-failed`, `<RUN>/due.json` or a scan file.
-- Run only these `retro-check` subcommands: `apply`, `verdicts`, `lessons`, `scrub`, `publish`. Never run `retro-check approve`, `drop` or `retire`: they are the user's answers, and they refuse in a headless run.
+- Run only these `retro-check` subcommands: `apply`, `verdicts`, `lessons`, `scrub`, `publish`. Never run `retro-check approve`, `drop`, `retire` or `keep`: they are the user's answers, and they refuse in a headless run.
 - Never quote any transcript, user message, PR comment or log line in the report, a draft or a candidate. Never name another project. Never copy a secret.
 - Never push, merge, open pull requests or file issues.
 - If a scan fails for one project, write that in a one-line report for it and go on to the next.

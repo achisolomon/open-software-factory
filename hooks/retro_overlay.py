@@ -56,6 +56,14 @@ def went_live_notice(overlay, rows, now=None):
     return "\n".join(lines)
 
 
+def is_withdrawn(path):
+    """True for an upstream draft whose first line starts with 'withdrawn' (the retro pulled it, for example after scrub hits)."""
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").lstrip().lower().startswith("withdrawn")
+    except OSError:
+        return False
+
+
 def corrupt_notice(overlay, path, bad):
     """Count only. The hook does not rewrite the file: `retro-check repair` makes the backup and the rewrite."""
     if not bad:
@@ -87,7 +95,7 @@ def main():
             parts.append(f"{stale} overlay entries are stale after a plugin update and are not applied. The next "
                          f"retro asks the user to keep, drop or rewrite them.")
         waiting = len(overlay.read_jsonl(overlay.overlay_file("pending")))
-        drafts = len(list((overlay.state_dir() / "upstream").glob("*.md")))
+        drafts = sum(1 for p in (overlay.state_dir() / "upstream").glob("*.md") if not is_withdrawn(p))
         if waiting or drafts:
             parts.append(f"Retro: {waiting} change(s) wait for the user's yes and {drafts} upstream draft(s) are "
                          f"ready. If you act as the Team Lead, tell the user once and offer /software-factory:retro review.")

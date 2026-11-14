@@ -31,6 +31,9 @@ CLASSES = ("preference", "improvement")
 REQUIRED = ("id", "kind", "class", "role", "text", "evidence")
 ALL_ROLES = "all"
 SECURITY_ROLE = "security-engineer"
+RUNS_DIR = "retros"  # <state>/retros/<day>/<slug>/ is one project's retro run
+DUE_FILE = "due.json"  # in the run folder: the launcher lists the due project path, out of the agent's reach
+WORK_DIR = "work"  # the only run subfolder the agent writes; the report sits here (scripts/retro-daily keeps a copy)
 LINE_CAP = 100
 MAX_TEXT = 400
 MAX_TEXT_LINES = 3
@@ -123,11 +126,18 @@ def write_jsonl(path, rows):
     if read_jsonl_counted(path)[1]:
         stamp_now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         shutil.copy2(path, path.with_name(f"{path.name}.corrupt-{stamp_now}"))
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")  # new file, no links followed
+    atomic_write(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode("utf-8"))
+
+
+def atomic_write(path, data):
+    """Write bytes to a new temp file in the same folder, then rename it over path. The one writer for every file the
+    retro engine saves: a crash never leaves half a file, and a symlink at path is replaced, not followed."""
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            tmp.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-        os.replace(tmp_name, path)  # atomic, so a crash never leaves half a file
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(data)
+        os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise

@@ -814,7 +814,7 @@ class CheckCliTests(unittest.TestCase):
     def test_approve_drop_and_retire_refuse_while_headless(self):  # #172
         self.check("apply", self.write("c.jsonl", [live(id="a")]))
         self.seed("entries", [{"id": "e", "status": "active", "text": "x"}])
-        for command, target in (("approve", "a"), ("drop", "a"), ("retire", "e")):
+        for command, target in (("approve", "a"), ("drop", "a"), ("retire", "e"), ("keep", "e")):
             self.assertIn("RETRO_HEADLESS", self.check(command, target, code=2, RETRO_HEADLESS="1")["error"])
         self.assertEqual([e["id"] for e in self.rows("pending")], ["a"])
         self.assertEqual(self.rows("entries")[0]["status"], "active")
@@ -1006,9 +1006,93 @@ class CheckCliTests(unittest.TestCase):
     def run_verdicts(self, changes, metrics, history_before=()):
         self.history(list(history_before) + [{"project": str(self.project), "changes": changes}])
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "due.json").write_text(json.dumps([str(self.project)]))
         path = self.run_dir / "vm.json"
         path.write_text(json.dumps(dict(metrics, project=str(self.project))))
         return self.check("verdicts", "--project", self.project, "--metrics", path)
+
+    def test_verdicts_refuse_the_scan_of_another_projects_run_folder(self):  # #204 item 2
+        other = self.base / "work" / "other-app"
+        theirs = self.state / "retros" / "2026-11-14" / "other-app"
+        theirs.mkdir(parents=True)
+        (theirs / "due.json").write_text(json.dumps([str(other)]))
+        (theirs / "m.json").write_text(json.dumps({"project": str(other), "headline": {"errors": 0}}))
+        self.history([{"project": str(self.project), "changes": [{"id": "c", "metric": "errors", "baseline": 1}]}])
+        self.assertIn("due.json", self.check("verdicts", "--project", self.project, "--metrics", theirs / "m.json", code=2)["error"])
+        (theirs / "due.json").write_text(json.dumps([str(self.project)]))  # listed, but the scan is still not this project's
+        self.assertIn("not the scan of", self.check("verdicts", "--project", self.project, "--metrics", theirs / "m.json", code=2)["error"])
+
+    def test_publish_stores_recomputed_verdicts_and_ignores_a_forged_file(self):  # #204 item 3
+        self.seed("entries", [{"id": "ok", "status": "active", "went_live_by": "approved"}])
+        self.history([{"project": str(self.project), "changes": [{"id": "ok", "metric": "sandbox_off.rtk gh", "baseline": 1.0}]}])
+        forged = self.base / "forged.json"
+        forged.write_text(json.dumps([{"id": "ok", "verdict": "kept", "action": None},
+                                      {"id": "other", "verdict": "kept", "action": "keep-it"}]))
+        report = self.report()
+        self.check("publish", report, "--project", self.project, "--sha", "abcdef1234", "--metrics", self.metrics(),
+                   "--changes", self.changes(), "--verdicts", forged)
+        previous = overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]["previous"]
+        self.assertEqual([(v["id"], v["verdict"], v.get("action")) for v in previous], [("ok", "reverted", "ask-retire")])
+
+    def test_verdicts_ignore_a_kept_flag_planted_in_history_changes(self):  # #204 item 3
+        self.seed("entries", [{"id": "ok", "status": "active", "went_live_by": "approved"}])
+        out = self.run_verdicts([{"id": "ok", "metric": "errors", "baseline": 1, "verdict": "kept", "action": "none"}],
+                                {"headline": {"errors": 5}})
+        self.assertEqual([(v["verdict"], v.get("action")) for v in out], [("reverted", "ask-retire")])
+
+    def test_reference_style_links_and_srcset_are_refused_by_publish_and_strict_scrub(self):  # #204 item 1
+        forms = ("[r]: //evil.test/p", "  [r]: relative/path", "![x][r]\n\n[r]: x", "<img srcset=\"a 1x\">", "SRCSET = a")
+        for text in forms:
+            self.assertIn("links or images", self.publish(self.report(f"# Retro\n\n{text}\n"), code=2)["error"], text)
+            path = self.base / "s.md"
+            path.write_text(f"{text}\n")
+            self.assertEqual({h["pattern"] for h in self.check("scrub", path, "--strict", code=1)["hits"]}, {"link"}, text)
+        self.publish(self.report("# Retro\n\nA bracket [x] mid-line is fine, and so is a:b.\n"))
+
+    def stale_entry(self, **over):
+        row = {"id": "s1", "kind": "add", "class": "improvement", "role": "software-developer",
+               "text": "Keep each commit message under 72 characters.", "evidence": "e",
+               "target": {"file": DEV_FILE, "heading": "Commits"}, "status": "stale", "reason": "plugin changed",
+               "plugin_version": "0.9", "anchor_sha": "old"}
+        row.update(over)
+        return row
+
+    def test_keep_reactivates_a_stale_entry_against_the_current_heading(self):  # architecture finding 9
+        self.seed("entries", [self.stale_entry()])
+        self.assertEqual(self.check("keep", "s1"), {"id": "s1", "status": "active"})
+        kept = self.rows("entries")[0]
+        self.assertEqual((kept["status"], kept["went_live_by"], kept["plugin_version"]), ("active", "approved", "1.0.0"))
+        self.assertNotEqual(kept["anchor_sha"], "old")
+        self.assertNotIn("reason", kept)
+
+    def test_keep_moves_an_entry_that_no_longer_fits_to_pending(self):  # architecture finding 9
+        self.seed("entries", [self.stale_entry(target={"file": DEV_FILE, "heading": "Removed heading"}), {"id": "a", "status": "active"}])
+        out = self.check("keep", "s1")
+        self.assertEqual(out["status"], "pending")
+        self.assertIn("no longer fits", out["reason"])
+        self.assertEqual([e["id"] for e in self.rows("entries")], ["a"])
+        waiting = self.rows("pending")
+        self.assertEqual([(e["id"], e["status"]) for e in waiting], [("s1", "pending")])
+        self.assertNotIn("went_live_by", waiting[0])
+
+    def test_keep_refuses_an_entry_that_is_not_stale(self):  # architecture finding 9
+        self.seed("entries", [self.stale_entry(status="active")])
+        self.assertIn("no stale entry", self.check("keep", "s1", code=1)["error"])
+        self.assertIn("no stale entry", self.check("keep", "missing", code=1)["error"])
+
+    def test_the_layout_constants_live_in_overlay_and_retro_daily_keeps_a_matching_copy(self):  # architecture finding 6
+        loader = SourceFileLoader("retro_daily_copy", str(ROOT / "scripts" / "retro-daily"))
+        daily = types.ModuleType("retro_daily_copy")
+        daily.__file__ = loader.path
+        loader.exec_module(daily)
+        self.assertEqual(daily.WORK_DIR, overlay.WORK_DIR)
+        self.assertEqual((overlay.RUNS_DIR, overlay.DUE_FILE), ("retros", "due.json"))
+
+    def test_atomic_write_replaces_the_file_and_leaves_no_temp_file(self):  # architecture finding 5
+        target = self.base / "out.md"
+        target.write_bytes(b"old")
+        overlay.atomic_write(target, b"new")
+        self.assertEqual((target.read_bytes(), [p.name for p in self.base.glob("out.md*")]), (b"new", ["out.md"]))
 
     def test_verdicts_refuse_a_metrics_file_outside_a_run_folder_or_of_another_project(self):  # R3
         self.history([{"project": str(self.project), "changes": [{"id": "c", "metric": "errors", "baseline": 1}]}])
@@ -1020,6 +1104,7 @@ class CheckCliTests(unittest.TestCase):
         agent_made.write_text(forged.read_text())
         self.assertIn("--metrics", self.check("verdicts", "--project", self.project, "--metrics", agent_made, code=2)["error"])
         elsewhere = self.metrics(scan_of=self.base / "work" / "other-app")
+        (self.run_dir / "due.json").write_text(json.dumps([str(self.project)]))
         self.assertIn("not the scan of", self.check("verdicts", "--project", self.project, "--metrics", elsewhere, code=2)["error"])
 
     def test_publish_refuses_the_scan_of_another_project(self):  # R2
@@ -1097,13 +1182,12 @@ class CheckCliTests(unittest.TestCase):
         f.write_text("The software-factory plugin, open-software-factory repo.\n")
         self.assertEqual(self.check("scrub", f, "--strict")["hits"], [])
 
-    def test_publish_stores_the_verdicts_input_in_the_history_row(self):
+    def test_publish_stores_no_verdict_the_history_does_not_back(self):  # #204 item 3
         verdicts = self.base / "v.json"
         verdicts.write_text(json.dumps([{"id": "x1", "verdict": "kept"}]))
         self.check("publish", self.report(), "--project", self.project, "--sha", "abcdef1234", "--metrics", self.metrics(),
                    "--changes", self.changes(), "--verdicts", verdicts)
-        self.assertEqual(overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]["previous"],
-                         [{"id": "x1", "verdict": "kept"}])
+        self.assertEqual(overlay.read_jsonl(self.state / "retro-metrics.jsonl")[-1]["previous"], [])
 
     def scrub_hit(self, text):
         f = self.base / "g.md"

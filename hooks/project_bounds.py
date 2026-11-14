@@ -39,7 +39,7 @@ def retro_state_folder(real):
     if state / "upstream" in real.parents:
         return True
     parts = real.relative_to(state).parts if state in real.parents else ()
-    return len(parts) >= 5 and parts[0] == "retros" and parts[3] == "work"
+    return len(parts) >= 5 and parts[0] == overlay.RUNS_DIR and parts[3] == overlay.WORK_DIR
 
 
 def outside(path, root, cwd, agent=""):
