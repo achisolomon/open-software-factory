@@ -1,5 +1,6 @@
 """Tests for scripts/retro-daily and scripts/retro-schedule. Nothing here installs a schedule or starts a model."""
 
+import contextlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
@@ -17,7 +18,7 @@ EXPECTED_DENIED = [
     "WebFetch", "WebSearch", "Agent", "mcp__*", "Read(//h/.ssh/**)", "Read(//h/.aws/**)", "Read(//h/.config/gcloud/**)",
     "Read(//w/alpha/**/.env*)", "Read(//w/alpha/**/*.pem)", "Read(//w/alpha/**/*.key)", "Read(//w/alpha/**/*.tfstate*)",
     "Read(//w/alpha/**/credentials*.json)", "Read(//w/alpha/**/.npmrc)", "Read(//w/alpha/**/.netrc)",
-    "Read(//w/alpha/**/.pypirc)", "Read(//w/alpha/**/id_*)", "Read(//w/alpha/**/*.p12)"]
+    "Read(//w/alpha/**/.pypirc)", "Read(//w/alpha/**/id_*)", "Read(//w/alpha/**/*.p12)", "Read(//w/alpha/**/*.jks)", "Read(//w/alpha/.git/config)"]
 EXPECTED_TOOLS = ([
     "Read(//h/.software-factory/retros/2026-11-14/alpha/**)", "Read(//h/.software-factory/overlay/**)",
     "Read(//h/.software-factory/upstream/**)", "Read(//opt/plugin/**)", "Read(//w/alpha/**)",
@@ -257,7 +258,79 @@ class RetroDailyTests(unittest.TestCase):
             self.assertIn(f"Read(//w/alpha/**/{glob})", denied)
 
 
+    def test_check_mode_logs_one_line_with_the_due_count_and_env_and_runs_nothing_else(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return done(0, json.dumps([{"project": "/w/alpha"}, {"project": "/w/beta"}]))
+
+        with mock.patch.object(self.daily.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(self.daily.sys, "argv", ["retro-daily", "--check"]), \
+                mock.patch.dict(os.environ, {"PATH": "/usr/bin", "HOME": "/h"}):
+            self.assertEqual(self.daily.main(), 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--due", calls[0])
+        line = (self.state / "retro.log").read_text().splitlines()
+        self.assertEqual(len(line), 1)
+        self.assertRegex(line[0], r"^retro check \S+ due=2 PATH=set HOME=/h SOFTWARE_FACTORY_HOME=.*/state$")
+        self.assertEqual(list(self.state.iterdir()), [self.state / "retro.log"])
+
+    def test_check_mode_reports_an_unset_path_and_a_failed_scan_and_still_exits_0(self):
+        env = {k: v for k, v in os.environ.items() if k != "PATH"}
+        with mock.patch.object(self.daily.subprocess, "run", return_value=done(2)), \
+                mock.patch.object(self.daily.sys, "argv", ["retro-daily", "--check"]), \
+                mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(self.daily.main(), 0)
+        self.assertRegex((self.state / "retro.log").read_text(), r"due=unknown \(scan-failed 2\) PATH=unset ")
+
+
 class RetroScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="retro-schedule-")
+        self.home = Path(os.path.realpath(self.tmp.name))
+        self.addCleanup(self.tmp.cleanup)
+        self.schedule = load("retro-schedule")
+        self.crontab = ["0 9 * * * x retro-daily # software-factory-retro"]
+        self.launchctl = []
+
+    def fake_job_tools(self):
+        """Temp HOME, and no real launchctl or crontab. subprocess.run is patched only inside these tests."""
+        env = {"HOME": str(self.home), "SOFTWARE_FACTORY_HOME": str(self.home / "state")}
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.dict(os.environ, env))
+        stack.enter_context(mock.patch.object(self.schedule.subprocess, "run", side_effect=self.fake_run))
+        return stack
+
+    def fake_run(self, cmd, **kw):
+        if cmd[0] == "launchctl":
+            self.launchctl.append(cmd)
+        elif cmd[:2] == ["crontab", "-"]:
+            self.crontab = kw["input"].splitlines()
+        return subprocess.CompletedProcess(cmd, 0, "\n".join(self.crontab), "")
+
+    def test_check_job_has_its_own_plist_label_and_flag_and_uninstall_leaves_the_daily_job(self):
+        agents = self.home / "Library" / "LaunchAgents"
+        with self.fake_job_tools(), mock.patch.object(self.schedule.sys, "platform", "darwin"):
+            self.schedule.main(["install", "--check"])
+            self.schedule.main(["install"])
+            check_plist = (agents / "dev.software-factory.retro.check.plist").read_text()
+            self.assertIn("<string>--check</string>", check_plist)
+            self.assertIn("<key>Label</key><string>dev.software-factory.retro.check</string>", check_plist)
+            self.assertNotIn("--check", (agents / "dev.software-factory.retro.plist").read_text())
+            self.schedule.main(["uninstall", "--check"])
+        self.assertEqual(sorted(p.name for p in agents.iterdir()), ["dev.software-factory.retro.plist"])
+        self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/dev.software-factory.retro.check"], self.launchctl)
+
+    def test_check_cron_line_has_the_flag_and_its_own_marker_and_uninstall_removes_only_it(self):
+        with self.fake_job_tools(), mock.patch.object(self.schedule.sys, "platform", "linux"):
+            self.schedule.main(["install", "--check"])
+            self.assertEqual(len(self.crontab), 2)
+            self.assertTrue(self.crontab[1].endswith("retro-daily' --check # software-factory-retro.check")
+                            or self.crontab[1].endswith("retro-daily --check # software-factory-retro.check"))
+            self.schedule.main(["uninstall", "--check"])
+        self.assertEqual(self.crontab, ["0 9 * * * x retro-daily # software-factory-retro"])
+
     def test_plist_and_cron_line(self):
         schedule = load("retro-schedule")
         plist = schedule.plist("/s/bin/retro-daily", 9, "/usr/bin:/bin", "/s/retro.log")

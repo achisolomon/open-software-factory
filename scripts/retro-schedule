@@ -5,6 +5,8 @@
                                                 (macOS: a launchd agent; Linux: one crontab line). --print shows
                                                 what would be installed and changes nothing.
   retro-schedule uninstall                      remove the job
+  retro-schedule install|uninstall --check      the same for a second job (label suffix .check) that runs
+                                                retro-daily --check: it logs the due count and the env it saw
 Stdlib only, Python 3.9+.
 """
 
@@ -19,21 +21,31 @@ from xml.sax.saxutils import escape
 
 LABEL = "dev.software-factory.retro"
 MARKER = "# software-factory-retro"
+CHECK_SUFFIX = ".check"
 
 
 def state_dir():
     return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
 
 
-def plist(launcher, hour, path_env, log, home=None):
+def label_for(check):
+    return LABEL + (CHECK_SUFFIX if check else "")
+
+
+def marker_for(check):
+    return MARKER + (CHECK_SUFFIX if check else "")
+
+
+def plist(launcher, hour, path_env, log, home=None, check=False):
     home_env = f"<key>SOFTWARE_FACTORY_HOME</key><string>{escape(home)}</string>" if home else ""
+    flag = "<string>--check</string>" if check else ""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>{LABEL}</string>
+  <key>Label</key><string>{label_for(check)}</string>
   <key>ProgramArguments</key>
-  <array><string>{escape(sys.executable)}</string><string>{escape(str(launcher))}</string></array>
+  <array><string>{escape(sys.executable)}</string><string>{escape(str(launcher))}</string>{flag}</array>
   <key>EnvironmentVariables</key>
   <dict><key>PATH</key><string>{escape(path_env)}</string>{home_env}</dict>
   <key>StartCalendarInterval</key>
@@ -45,9 +57,11 @@ def plist(launcher, hour, path_env, log, home=None):
 """
 
 
-def cron_line(launcher, hour, path_env, home=None):
+def cron_line(launcher, hour, path_env, home=None, check=False):
     env = f"PATH={shlex.quote(path_env)}" + (f" SOFTWARE_FACTORY_HOME={shlex.quote(home)}" if home else "")
-    return f"0 {int(hour)} * * * {env} {shlex.quote(sys.executable)} {shlex.quote(str(launcher))} {MARKER}"
+    flag = " --check" if check else ""
+    return (f"0 {int(hour)} * * * {env} {shlex.quote(sys.executable)} {shlex.quote(str(launcher))}{flag} "
+            f"{marker_for(check)}")
 
 
 def path_env():
@@ -56,23 +70,23 @@ def path_env():
     return ":".join(dirs + ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"])
 
 
-def plist_path():
-    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+def plist_path(check=False):
+    return Path.home() / "Library" / "LaunchAgents" / f"{label_for(check)}.plist"
 
 
-def crontab_without_marker():
+def crontab_without_marker(check=False):
     current = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
     lines = current.stdout.splitlines() if current.returncode == 0 else []
-    return [line for line in lines if not line.endswith(MARKER)]
+    return [line for line in lines if not line.endswith(marker_for(check))]
 
 
-def install(hour, show):
+def install(hour, show, check=False):
     state = state_dir()
     launcher = state / "bin" / "retro-daily"
     log = state / "retro.log"
     home = os.environ.get("SOFTWARE_FACTORY_HOME")
-    text = (plist(launcher, hour, path_env(), log, home) if sys.platform == "darwin"
-            else cron_line(launcher, hour, path_env(), home))
+    text = (plist(launcher, hour, path_env(), log, home, check) if sys.platform == "darwin"
+            else cron_line(launcher, hour, path_env(), home, check))
     if show:
         print(text)
         return 0
@@ -80,22 +94,22 @@ def install(hour, show):
     shutil.copyfile(Path(__file__).with_name("retro-daily"), launcher)
     launcher.chmod(0o755)
     if sys.platform == "darwin":
-        target = plist_path()
+        target = plist_path(check)
         target.parent.mkdir(parents=True, exist_ok=True)
         domain = f"gui/{os.getuid()}"
-        subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"], capture_output=True)
+        subprocess.run(["launchctl", "bootout", f"{domain}/{label_for(check)}"], capture_output=True)
         target.write_text(text)
         return subprocess.run(["launchctl", "bootstrap", domain, str(target)]).returncode
-    lines = crontab_without_marker() + [text]
+    lines = crontab_without_marker(check) + [text]
     return subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True).returncode
 
 
-def uninstall():
+def uninstall(check=False):
     if sys.platform == "darwin":
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], capture_output=True)
-        plist_path().unlink(missing_ok=True)
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label_for(check)}"], capture_output=True)
+        plist_path(check).unlink(missing_ok=True)
         return 0
-    lines = crontab_without_marker()
+    lines = crontab_without_marker(check)
     return subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True).returncode
 
 
@@ -105,9 +119,11 @@ def main(argv=None):
     p = sub.add_parser("install")
     p.add_argument("--hour", type=int, default=9, choices=range(24))
     p.add_argument("--print", action="store_true", dest="show")
-    sub.add_parser("uninstall")
+    q = sub.add_parser("uninstall")
+    for parser in (p, q):
+        parser.add_argument("--check", action="store_true")
     a = ap.parse_args(argv)
-    return install(a.hour, a.show) if a.cmd == "install" else uninstall()
+    return install(a.hour, a.show, a.check) if a.cmd == "install" else uninstall(a.check)
 
 
 if __name__ == "__main__":

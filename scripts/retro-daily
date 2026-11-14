@@ -26,7 +26,7 @@ WORK_DIR = "work"  # the agent's only run subfolder; keep in step with retro-che
 DISALLOWED = ("WebFetch", "WebSearch", "Agent", "mcp__*")
 SECRET_FOLDERS = (".ssh", ".aws", ".config/gcloud")  # never readable, even if a scoped rule would cover them
 SECRET_PROJECT_GLOBS = ("**/.env*", "**/*.pem", "**/*.key", "**/*.tfstate*", "**/credentials*.json", "**/.npmrc",
-                        "**/.netrc", "**/.pypirc", "**/id_*", "**/*.p12")
+                        "**/.netrc", "**/.pypirc", "**/id_*", "**/*.p12", "**/*.jks", ".git/config")
 MARKETPLACE = "software-factory-marketplace"  # the plugin is taken from this marketplace's cache only, never a lookalike
 MAX_PROJECTS_PER_DAY = 5
 LOG_LIMIT = 1_000_000  # bytes; a bigger retro.log moves to retro.log.1
@@ -185,7 +185,24 @@ def start_log(log):
         out.write(f"=== retro run {datetime.datetime.now().isoformat(timespec='seconds')} ===\n")
 
 
+def check_due():
+    """--check: run only the due check and log one line with the due count and the env this launcher saw, so a schedule
+    test shows what launchd or cron really passes. No scan file, no agent, no publish. Always exits 0."""
+    state, root = state_dir(), plugin_root()
+    due, problem = scan_due(root) if root else ([], "plugin-not-found")
+    seen = (f"PATH={'set' if os.environ.get('PATH') else 'unset'} HOME={os.environ.get('HOME')} "
+            f"SOFTWARE_FACTORY_HOME={os.environ.get('SOFTWARE_FACTORY_HOME')}")
+    count = f"unknown ({problem})" if problem else len(due)
+    start = datetime.datetime.now().isoformat(timespec="seconds")
+    state.mkdir(parents=True, exist_ok=True)
+    with open(state / "retro.log", "a", encoding="utf-8") as out:
+        out.write(f"retro check {start} due={count} {seen}\n")
+    return 0
+
+
 def main():
+    if sys.argv[1:] == ["--check"]:
+        return check_due()
     state = state_dir()
     root = plugin_root()
     if not root:

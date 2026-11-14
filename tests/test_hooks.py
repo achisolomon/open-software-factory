@@ -814,6 +814,7 @@ class HooksJsonTests(unittest.TestCase):
             ("PreToolUse", "Agent|Task", "require_agent_model.py"),
             ("PreToolUse", "Bash", "gate.py"),
             ("PreToolUse", "Bash", "no_wait.py"),
+            ("PreToolUse", "Bash", "retro_approve_guard.py"),
             ("PreToolUse", "Write|Edit|NotebookEdit", "project_bounds.py"),
             ("SubagentStop", None, "check_reply.py"),
             ("SessionStart", "compact", "after_compact.py"),

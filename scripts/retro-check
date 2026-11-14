@@ -29,6 +29,9 @@ Every command except check, lessons and scrub holds an exclusive lock on <state>
                                                         --strict also flags links, reference-style link definitions,
                                                         srcset, discovered project names and private-words.txt.
                                                         Exit 2 on a missing or unreadable file
+  retro-check draft-diff DRAFT REPO                     exit 1 when the uncommitted change in REPO (git diff HEAD) holds
+                                                        anything but added lines that the draft shows: a deletion, an
+                                                        untracked file, an added line not in the draft, no added line
   retro-check publish REPORT --project P --sha SHA --metrics FILE --changes FILE [--verdicts FILE]
                                                         scrub the report (strict, minus P's own name), write it to
                                                         <P>/docs/factory/retros/ and append the history row. REPORT
@@ -53,6 +56,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
@@ -73,7 +77,7 @@ REVIEWER_ROLES = frozenset({"security-engineer", "test-automation-engineer", "so
 REVIEW_HEADING = re.compile(r"^#{1,6}\s.*review", re.I | re.M)
 SHA = re.compile(r"[0-9a-f]{7,40}")
 USER_ONLY = ("approve", "drop", "retire", "keep")
-READ_ONLY = ("check", "lessons", "scrub")  # every other command takes the overlay lock (shared with the SessionStart refresh)
+READ_ONLY = ("check", "lessons", "scrub", "draft-diff")  # every other command takes the overlay lock (shared with the SessionStart refresh)
 HEADLESS_ENV = "RETRO_HEADLESS"
 LESSON_KEY = re.compile(r"[a-z0-9-]{1,40}")
 STATE_FIELDS = ("status", "reason", "went_live_at", "went_live_by")  # set by retro-check only, never by a candidate
@@ -336,6 +340,32 @@ def cmd_scrub(paths, strict):
     return {"hits": hits}, 1 if hits else 0
 
 
+def cmd_draft_diff(draft, repo):
+    """The repo's uncommitted change (git diff HEAD) must only add lines the draft shows: no deletion, no untracked
+    file, no added line that is not a line of the draft (#204 item 5). Blank added lines pass."""
+    shown = {line.strip() for line in read_text_file(draft).splitlines() if line.strip()}
+
+    def git(*args):
+        run = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+        if run.returncode:
+            raise CheckError(f"git {args[0]} failed in {repo}")
+        return run.stdout
+
+    extra = [f"untracked: {l[3:]}" for l in git("status", "--porcelain").splitlines() if l.startswith("??")]
+    added = 0
+    for line in git("diff", "HEAD", "--unified=0", "--no-color").splitlines():
+        if line.startswith(("+++", "---")) or line[:1] not in ("+", "-"):
+            continue
+        if line[0] == "-":
+            extra.append(line)
+        elif line[1:].strip():
+            added += 1
+            extra += [line] if line[1:].strip() not in shown else []
+    if not added and not extra:
+        extra.append("no added lines")
+    return {"extra": extra}, 1 if extra else 0
+
+
 def cmd_publish(report, project, sha, metrics_path, changes_path, verdicts_path):
     if not SHA.fullmatch(sha):
         raise CheckError("--sha must be 7 to 40 lowercase hex characters")
@@ -401,6 +431,9 @@ def build_parser():
     p = sub.add_parser("scrub")
     p.add_argument("files", nargs="+")
     p.add_argument("--strict", action="store_true")
+    p = sub.add_parser("draft-diff")
+    p.add_argument("draft")
+    p.add_argument("repo")
     p = sub.add_parser("publish")
     p.add_argument("report")
     for flag in ("--project", "--sha", "--metrics", "--changes"):
@@ -427,6 +460,8 @@ def run(a):
         return cmd_lessons()
     if a.cmd == "scrub":
         return cmd_scrub(a.files, a.strict)
+    if a.cmd == "draft-diff":
+        return cmd_draft_diff(a.draft, a.repo)
     return cmd_publish(a.report, str(Path(a.project).resolve()), a.sha, a.metrics, a.changes, a.verdicts)
 
 

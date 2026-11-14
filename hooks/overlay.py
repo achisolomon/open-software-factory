@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import unicodedata
 
@@ -62,8 +63,22 @@ FENCES = ("```", "~~~")
 BIDI_CONTROLS = frozenset("‪‫‬‭‮⁦⁧⁨⁩‎‏؜")
 
 
+def unsafe_state_dir(path):
+    """True for home, the root, or a folder inside a git work tree (a project's env block could aim the state at a
+    sibling project, #204)."""
+    real = Path(os.path.realpath(path))
+    return real in (Path(os.path.realpath(Path.home())), Path(real.anchor)) or any(
+        (folder / ".git").exists() for folder in (real, *real.parents))
+
+
 def state_dir():
-    return Path(os.environ.get("SOFTWARE_FACTORY_HOME") or Path.home() / ".software-factory")
+    default = Path.home() / ".software-factory"
+    chosen = os.environ.get("SOFTWARE_FACTORY_HOME")
+    if chosen and unsafe_state_dir(chosen):
+        print(f"retro: ignoring SOFTWARE_FACTORY_HOME={chosen} (home, root or inside a git work tree); using {default}",
+              file=sys.stderr)
+        return default
+    return Path(chosen) if chosen else default
 
 
 def overlay_file(name):
