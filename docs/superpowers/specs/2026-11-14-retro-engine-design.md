@@ -155,6 +155,11 @@ Unit tests in `tests/`, in the existing style, on fixture transcripts:
   - A write outside the rule was denied with "you haven't granted it yet", and no file was created.
   - The agent's own tool list still applies: `triage-classifier` has no Write tool and refused. The retro agent must list Write and Bash in its frontmatter.
 - How a SessionStart hook can best load the overlay into subagent context (the hook output reaches the main session; subagents may need the Team Lead to pass it in briefs).
+- Dry run 2026-11-15 (scratch state folder, haiku, no publish, nothing written to a project):
+  - `retro-scan --due` listed 1 project.
+  - A scan of a worktree path found 0 sessions; a scan of the main checkout path found 19 sessions, 3168 tool calls, 370 errors, 127 hook blocks, 86 sandbox-off calls, 24 ask hits, 48 corrections, 59 dispatches.
+  - Headless `retro-daily` for 1 project: exit 0, no `retro-failed`, 0 permission-denied lines, 3 files written in `work/` (report, verdicts, changes). The agent skipped publish because the test prompt had no sha (the test stub left it out).
+  - In-session flow: `retro-scan`, `retro-check verdicts` and `retro-check lessons` ran as written. Writing `due.json` with the Write tool was refused by the factory write hook (target outside the project folder).
 
 ## Out of scope
 
