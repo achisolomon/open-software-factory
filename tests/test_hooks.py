@@ -817,6 +817,7 @@ class HooksJsonTests(unittest.TestCase):
             ("PreToolUse", "Write|Edit|NotebookEdit", "project_bounds.py"),
             ("SubagentStop", None, "check_reply.py"),
             ("SessionStart", "compact", "after_compact.py"),
+            ("SessionStart", "compact", "retro_overlay.py"),
             ("SessionStart", "startup|resume|clear", "version_check.py"),
             ("SessionStart", "startup|resume|clear", "scratch.py start"),
             ("SessionStart", "startup|resume|clear", "retro_overlay.py"),
