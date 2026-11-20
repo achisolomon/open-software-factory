@@ -2,6 +2,11 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
+## 0.10.1 (2026-11-20)
+
+- **The project has a website: [opensoftwarefactory.ai](https://opensoftwarefactory.ai/).** The plugin's `homepage` now points there and the README links to it. The plugin shows as "Open Software Factory"; the plugin and marketplace names (`software-factory@software-factory-marketplace`) are unchanged.
+- The old `docs/index.html` redirect page is removed. `docs/TRUST.md`, `docs/provenance.md` and `docs/improvement-backlog.md` stay.
+
 ## 0.10.0 (2026-11-14)
 
 - **The plugin moved to `plugin/`.** What you install is now only the agents, skills, hooks, the handoff contract, the review-route script and the Retro Engine scripts. Docs, evals, tests and images stay in the repository but are no longer shipped. Same install command, same plugin name; run the usual update once. The root `.claude-plugin/plugin.json` stays as a version pointer so older installs still see this update.

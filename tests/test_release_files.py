@@ -104,7 +104,7 @@ class ReleaseFilesTests(unittest.TestCase):
             self.assertIn(needle, provenance)
 
     def test_release_files_contain_no_em_dash(self):
-        for name in ("CHANGELOG.md", "README.md", "docs/provenance.md", "docs/index.html"):
+        for name in ("CHANGELOG.md", "README.md", "docs/provenance.md"):
             self.assertNotIn("—", read(name), name)
 
 
