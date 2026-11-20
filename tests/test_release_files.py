@@ -92,7 +92,7 @@ class ReleaseFilesTests(unittest.TestCase):
 
     def test_readme_team_table_lists_every_agent(self):
         # An agent added without a display name here fails the test on purpose.
-        table = read("README.md").split("## Meet the team", 1)[1].split("## Quick start", 1)[0]
+        table = read("README.md").split("## Meet the team", 1)[1].split("\n## ", 1)[0]
         for path in sorted((PLUGIN / "agents").glob("*.md")):
             display_name = AGENT_DISPLAY_NAMES.get(path.stem)
             self.assertIsNotNone(display_name, f"add {path.stem} to AGENT_DISPLAY_NAMES")
