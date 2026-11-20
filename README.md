@@ -2,11 +2,11 @@
   <img src="assets/social-preview.jpg" alt="Software Factory: your spec goes in untouched, a Team Lead orchestrates a line of specialist AI agents (architect, developer, test, security, UX, DevOps, cost, performance, product), and a finished, approved product comes out" width="100%">
 </p>
 
-# Software Factory
+# Open Software Factory
 
 **Everyone can build a software factory. The best one will be built together.**
 
-An open-source AI software team for Claude Code: 10+ agents (Architect, Developer, Tester, PM, Security, UX and more) that take your spec to a tested, reviewed release.
+An open-source AI software team for Claude Code: specialist agents (Architect, Developer, Tester, PM, Security, UX and more) that take your spec to a tested, reviewed release. The team keeps growing.
 
 **[Use it](#quick-start). [Improve it](#contribute). [Star it](https://github.com/achisolomon/open-software-factory).**
 
@@ -24,6 +24,47 @@ The agents are checked too: 31 behavior evals and 407 offline tests guard their 
 - **Quality you can check**: every task is tested and reviewed, and "done" means re-run command output, not an agent's word.
 - **You stay in control**: no push, merge, deploy, paid resource or data deletion without your explicit approval.
 - **Sensible model costs**: each agent runs on the smallest model that does its job well (see [Meet the team](#meet-the-team)). Haiku handles triage and lookups, Sonnet builds and runs routine reviews, and Opus is kept for product, architecture, security and final gates. Say "conserve my limits" to go cheaper; that changes models, never steps or gates.
+
+## Quick start
+
+1. **Install once per machine.** Paste this line into a terminal (in VS Code: Terminal > New Terminal, not the Claude chat box):
+
+   ```bash
+   claude plugin marketplace add achisolomon/open-software-factory && claude plugin install software-factory@software-factory-marketplace --scope user
+   ```
+
+   It ends with `Successfully installed plugin: software-factory@software-factory-marketplace (scope: user)`. Then reload VS Code: Cmd+Shift+P, **Developer: Reload Window**.
+
+2. **Say "team lead" with one small job.** Open your project in VS Code, start a new Claude Code chat and give the team a small, real task:
+
+   ```text
+   team lead, fix the typo in the log message
+   ```
+
+   Small work takes the fast path: a Developer makes the change, the Architect reviews it and the Test Engineer verifies it. The first time in a project, the Team Lead asks whether to set the project up first. Say yes: setup asks a few project questions in one batch (stack, compliance, budget, whether agents may commit locally), then creates `docs/factory/`, maps an existing codebase and sets up a GitHub Project board. To run setup yourself, use `/software-factory:factory-init` (type `/factory` in the chat box to find it). Its first reply starts with `Software Factory v<version>`, which means the team is loaded.
+
+3. **Then bring a spec.** For a feature or a whole product, the Team Lead expects a clear spec before the team starts. Write it with the spec-driven tool you like, such as [Superpowers](https://github.com/obra/superpowers), [BMAD](https://github.com/bmad-code-org/BMAD-METHOD), [OpenSpec](https://github.com/Fission-AI/OpenSpec) or [Spec Kit](https://github.com/github/spec-kit) ([compare spec-driven tools](https://aitoolreview.ai/?subcategory=spec-driven)). The factory uses these tools instead of replacing them: the Product Manager checks your spec for gaps (metrics, NFRs, testable acceptance criteria) but never rewrites it. Then:
+
+   ```text
+   team lead, build docs/spec.md
+   ```
+
+   The team goes to work, and stops for your approval at every important decision.
+
+**Troubleshooting**
+
+- "No matching commands": open a new chat, or reload VS Code (Cmd+Shift+P, **Developer: Reload Window**), then type `/factory`.
+- Check what is installed with `claude plugin list` in a terminal. software-factory should show as enabled, user scope, at the latest version.
+
+## Contribute
+
+Every improvement you make for your own projects can make the factory better for everyone:
+
+- **Found a gap?** [Open an issue](https://github.com/achisolomon/open-software-factory/issues/new): a review the agents missed, a gate that was too loose or too strict, a step that wasted time or tokens.
+- **Want to start small?** Pick a [`good first issue`](https://github.com/achisolomon/open-software-factory/labels/good%20first%20issue).
+- **Fixed it?** Open a pull request. Agent prompts live in `plugin/agents/`, the shared rules in `plugin/reference/handoff-contract.md`, and the code-enforced gates in `plugin/hooks/`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Have an idea?** Check [docs/improvement-backlog.md](docs/improvement-backlog.md) first, then start a [discussion](https://github.com/achisolomon/open-software-factory/discussions).
+- **Like it?** Give it a star and tell a friend.
 
 ## Meet the team
 
@@ -50,39 +91,6 @@ Read-only lookups run on Haiku. To change the policy, see [Tips](#tips).
 
 Current version: 0.10.0. What changed in each release, newest first: [release notes](CHANGELOG.md).
 
-## Quick start
-
-1. **Install once per machine.** Paste this line into a terminal (in VS Code: Terminal > New Terminal, not the Claude chat box):
-
-   ```bash
-   claude plugin marketplace add achisolomon/open-software-factory && claude plugin install software-factory@software-factory-marketplace --scope user
-   ```
-
-   It ends with `Successfully installed plugin: software-factory@software-factory-marketplace (scope: user)`. Then reload VS Code: Cmd+Shift+P, **Developer: Reload Window**.
-
-2. **Write a good spec.** The Team Lead expects a clear spec before the team starts. Write it with the spec-driven tool you like, such as [Superpowers](https://github.com/obra/superpowers), [BMAD](https://github.com/bmad-code-org/BMAD-METHOD), [OpenSpec](https://github.com/Fission-AI/OpenSpec) or [Spec Kit](https://github.com/github/spec-kit) ([compare spec-driven tools](https://aitoolreview.ai/?subcategory=spec-driven)). The factory uses these tools instead of replacing them: the Product Manager checks your spec for gaps (metrics, NFRs, testable acceptance criteria) but never rewrites it.
-
-3. **Set up the project, once.** Open your project in VS Code, start a new Claude Code chat and run:
-
-   ```text
-   /software-factory:factory-init
-   ```
-
-   (Type `/factory` in the chat box to find it.) The first reply starts with `Software Factory v<version>`, which means the team is loaded. Init asks a few project questions in one batch (stack, compliance, budget, whether agents may commit locally), then creates `docs/factory/`, maps an existing codebase and sets up a GitHub Project board.
-
-4. **Say "team lead":**
-
-   ```text
-   team lead, build docs/spec.md
-   ```
-
-   The team goes to work, and stops for your approval at every important decision. (If you skip step 3, the Team Lead offers to run init for you the first time.)
-
-**Troubleshooting**
-
-- "No matching commands": open a new chat, or reload VS Code (Cmd+Shift+P, **Developer: Reload Window**), then type `/factory`.
-- Check what is installed with `claude plugin list` in a terminal. software-factory should show as enabled, user scope, at the latest version.
-
 ## Tips
 
 - **Spend less and go faster** with these skills, all on [AI Tool Review's cost-reduction list](https://aitoolreview.ai/?tag=cost-reduction):
@@ -99,25 +107,7 @@ Current version: 0.10.0. What changed in each release, newest first: [release no
 - **GitHub issue tracking**: give `gh` the `project` scope once: `gh auth refresh -s project`. Without it, tasks are tracked in `docs/architecture/tasks.md`. Init also offers the GitHub MCP server instead of `gh` for the Product Manager and Project Manager (no shell for them, but you add the server with a personal access token); `gh` is the recommended default.
 - **Commit the `docs/` folder** now and then, so the team's state is versioned with the code.
 
-## Contribute
-
-<details>
-<summary>Issues, starter tasks, pull requests and ideas</summary>
-
-Every improvement you make for your own projects can make the factory better for everyone:
-
-- **Found a gap?** [Open an issue](https://github.com/achisolomon/open-software-factory/issues/new): a review the agents missed, a gate that was too loose or too strict, a step that wasted time or tokens.
-- **Want to start small?** Pick a [`good first issue`](https://github.com/achisolomon/open-software-factory/labels/good%20first%20issue).
-- **Fixed it?** Open a pull request. Agent prompts live in `plugin/agents/`, the shared rules in `plugin/reference/handoff-contract.md`, and the code-enforced gates in `plugin/hooks/`. See [CONTRIBUTING.md](CONTRIBUTING.md).
-- **Have an idea?** Check [docs/improvement-backlog.md](docs/improvement-backlog.md) first, then start a [discussion](https://github.com/achisolomon/open-software-factory/discussions).
-- **Like it?** Give it a star and tell a friend.
-
-</details>
-
 ## How it works
-
-<details>
-<summary>The lifecycle, gates and rules the team follows</summary>
 
 ```mermaid
 flowchart LR
@@ -125,6 +115,9 @@ flowchart LR
   G1 --> A[Architecture<br/>Architect] --> R[Design reviews<br/>Security · FinOps · DevOps · Test · UX] --> G2{{Gate 2<br/>Design + cost}}
   G2 --> B[Build loop per task<br/>Developer → Test + Architect + Security + FinOps + UX] --> RR[Release readiness<br/>+ Performance load tests] --> G3{{Gate 3<br/>Release}}
 ```
+
+<details>
+<summary>The gates and rules the team follows</summary>
 
 - **Triage first.** The Team Lead classifies clear small requests inline using the Triage Classifier rules and delegates ambiguous or substantial ones. The resulting path (`fast-path` up to `full-lifecycle`) decides how much process runs. The Team Lead can add process, never remove it without you.
 - **A factory brain per repo.** `docs/factory/brain.md` holds short, verified facts about the repo (build quirks, recurring findings) that every agent reads. Agents propose notes; only the Team Lead writes them.
