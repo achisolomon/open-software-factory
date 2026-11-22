@@ -105,7 +105,7 @@ class ReleaseFilesTests(unittest.TestCase):
 
     def test_release_files_contain_no_em_dash(self):
         for name in ("CHANGELOG.md", "README.md", "docs/provenance.md"):
-            self.assertNotIn("—", read(name), name)
+            self.assertNotIn("\N{EM DASH}", read(name), name)
 
 
 if __name__ == "__main__":
