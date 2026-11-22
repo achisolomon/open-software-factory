@@ -27,7 +27,7 @@ Read the shared contract first: `${CLAUDE_PLUGIN_ROOT}/reference/handoff-contrac
    - `build-loop-only` for `small`: the Architect writes one task if none exists.
    - `fast-path` for `trivial`: one task, Developer then Architect review; Test verifies; no other reviewers unless a rule below fires.
    - `review-only` for `review`; `answer-only` for `question`.
-5. **Decide the conditional reviewers** from what the request will touch, using the contract's Definition of Done rules and the Team roster (`- Team:` under Preferences in `project-facts.md`; no line means `security=per-epic`, the rest `per-task`). Each gets `yes`, `epic` or `no` and a one-line reason:
+5. **Decide the conditional reviewers** from what the request will touch, using the contract's Definition of Done rules and the Team roster (`- Team:` under Preferences in `project-facts.md`; no line means `security=per-epic`, `ux=per-epic`, `finops=off`, `devops=per-epic`). Each gets `yes`, `epic` or `no` and a one-line reason:
    - `security`: `yes` on a hard trigger: authN/authZ code, security rules, secrets, a new or changed dependency, payments, migrations, agent instruction files, removing a check. Other security-relevant work (input handling, data storage, external calls) is `yes` when the roster says `security=per-task`, `epic` when it says `per-epic`, `no` when it says `off`. When unsure whether a hard trigger applies, say `yes`: a missed security review costs more than an extra one.
    - `finops`: a paid resource, a paid third-party API, data retention, scaling settings, CI workflows (GitHub Actions minutes and storage).
    - `ux`: any UI change a user would see.

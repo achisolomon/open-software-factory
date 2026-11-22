@@ -6,6 +6,7 @@ What changed in each release of the Software Factory plugin, newest first. Back 
 
 - **Fewer questions.** A week of traces showed 217 questions asked of the user, and 56% were answered with the recommended first option. The Team Lead now decides a reversible, inside-the-repo choice itself (naming, wording, equivalent implementations, layout, test data, ordering), says so in one line, and asks only at approval gates, for irreversible or outward-facing steps, when the user's words conflict, or when options differ in scope or cost.
 - **No approval prompts for scratch cleanup.** 31 of 32 ask-rule prompts in a week were `rm -r` on scratch folders and `git worktree remove --force` on mutation worktrees. A new `scripts/scratch-clean` deletes files, folders and throwaway worktrees, and refuses anything not strictly inside `$FACTORY_TMP` or `$TMPDIR` (symlink escapes and the root included). Agents use it instead of `rm -r`.
+- **Leaner default team.** Review roles used about 1.6 times the Developer's tokens in a week, and no project had set a roster. With no `- Team:` line, UX and DevOps now review once per epic instead of on every task, and FinOps is off. Security stays per epic. Hard security triggers still run Security on the task, every reviewer still runs at release, and a project can put any role back to `per-task` with a `- Team:` line.
 
 ## 0.10.0 (2026-11-14)
 
