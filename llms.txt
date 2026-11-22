@@ -1,0 +1,58 @@
+# Open Software Factory
+
+> Open Software Factory is a free, open-source (AGPL-3.0) Claude Code plugin that gives you a team of AI agents (Team Lead, Architect, Developer, Tester, Security and more) to take your spec to a tested, reviewed release, and it stops for your approval before any push, merge or deploy.
+
+## Install
+
+Paste this line into a terminal once per machine:
+
+```
+claude plugin marketplace add achisolomon/open-software-factory && claude plugin install software-factory@software-factory-marketplace --scope user
+```
+
+## The 7 steps
+
+- Step one: You hand over a spec, written with the spec tool you like. The Product Manager checks it for gaps and never rewrites it.
+- Step two: The Team Lead classifies every request first: its type, its size and the reviewers it needs. Small work takes the fast path.
+- Step three: The Architect splits the design into small tasks. A Developer builds one task at a time, with unit tests, and the Test Engineer hunts for where it breaks.
+- Step four: Every task is reviewed. The Architect checks the code; Security, FinOps and UX can join. A finding goes back to the Developer, for at most three fix rounds.
+- Step five: Independent tasks can run side by side when you choose speed. The Team Lead posts a status board: who is running, blocked, done, and what is next.
+- Step six: The Team Lead stops at three gates: the requirements, the design with its cost, and the release. Nothing moves on until you approve.
+- Step seven: No push, merge, deploy, paid resource or data deletion happens without your explicit approval. The Team Lead holds the release until you say yes.
+
+## Agents
+
+<!-- roster:start -->
+- Team Lead (Your session's model (Opus by default)): Runs the process: plans the work, hands it to the right specialist, keeps the status board, holds the gates and talks to you.
+- Triage Classifier (Haiku): Sorts every new request first, so small work takes the fast path and big work gets the full process. Read-only.
+- Product Manager (Opus): Turns your idea or spec into a clear PRD and a backlog of stories with testable acceptance criteria, and checks your spec for gaps.
+- Project Manager (Haiku): Keeps the GitHub issues and the project board current as work moves, and audits the board before each gate.
+- Software Architect (Opus): Designs the system, writes the decisions and contracts, breaks the work into tasks and reviews the code.
+- Software Developer (Sonnet): Builds one task at a time with unit tests on a local branch, and fixes what the reviewers find.
+- Test Automation Engineer (Sonnet): The devil's advocate: plans the tests, writes integration and end-to-end tests, and hunts for where the code breaks.
+- Exploratory QA Engineer (Sonnet): Explores the running app like a user, in local or disposable setups only, and turns each bug into a failing repro test.
+- DevOps Engineer (Sonnet): Sets up environments, containers, CI/CD and infrastructure as code, and checks them with dry runs.
+- FinOps Engineer (Sonnet): Models the cost with sourced prices, sets cost guardrails and reviews changes for what they will cost.
+- Security Engineer (Opus): Threat-models the design, sets the security requirements, reviews and scans the code, and holds the final release gate.
+- UX/UI Designer (Sonnet): Designs user flows and screens, and reviews UI changes for usability and accessibility.
+- Performance Engineer (Opus): Load-tests the system and finds what breaks under load, before a merge to main or a deploy.
+- Retro (Sonnet): Once a day, reads how the sessions went and drafts small fixes for the causes. They wait for your yes.
+- Your agent (Your choice): Add your own specialist as one agent file. Open a discussion on the repo to share the idea.
+<!-- roster:end -->
+
+## Safety and cost
+
+- No push to a shared branch, merge to main, deploy, paid resource or data deletion happens without your explicit approval of that specific action. The trust model is in TRUST.md: https://github.com/achisolomon/open-software-factory/blob/main/docs/TRUST.md
+- Each agent runs on the smallest model that does its job well. Say "conserve my limits" to go cheaper; that changes models, never steps or gates.
+- The code the agents write in your own project is yours. The license covers the factory itself.
+
+## Works with
+
+- Claude Code, in a terminal or in the VS Code extension.
+
+## Links
+
+- Source: https://github.com/achisolomon/open-software-factory
+- Releases: https://github.com/achisolomon/open-software-factory/releases
+- Contribute: https://github.com/achisolomon/open-software-factory/blob/main/CONTRIBUTING.md
+- Home page: https://opensoftwarefactory.ai/

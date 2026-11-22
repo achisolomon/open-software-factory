@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Open Software Factory: an open-source AI software team for Claude Code</title>
+<meta name="description" content="Free, open-source Claude Code plugin. A team of AI agents takes your spec to a tested, reviewed release, and waits for your yes before any push or deploy.">
+<link rel="canonical" href="https://opensoftwarefactory.ai/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Open Software Factory: an open-source AI software team for Claude Code">
+<meta property="og:description" content="Free, open-source Claude Code plugin. A team of AI agents takes your spec to a tested, reviewed release, and waits for your yes before any push or deploy.">
+<meta property="og:image" content="https://opensoftwarefactory.ai/og-image.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Open Software Factory: an open-source AI software team for Claude Code">
+<meta name="twitter:description" content="Free, open-source Claude Code plugin. A team of AI agents takes your spec to a tested, reviewed release, and waits for your yes before any push or deploy.">
+<meta name="twitter:image" content="https://opensoftwarefactory.ai/og-image.jpg">
+<link rel="preload" href="fonts/ibm-plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/ibm-plex-sans-500.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://opensoftwarefactory.ai/#software",
+      "name": "Open Software Factory",
+      "applicationCategory": "DeveloperApplication",
+      "url": "https://opensoftwarefactory.ai/",
+      "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+      "isAccessibleForFree": true,
+      "description": "Open Software Factory is a free, open-source (AGPL-3.0) Claude Code plugin that gives you a team of AI agents (Team Lead, Architect, Developer, Tester, Security and more) to take your spec to a tested, reviewed release, and it stops for your approval before any push, merge or deploy.",
+      "isBasedOn": {"@id": "https://opensoftwarefactory.ai/#source"}
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://opensoftwarefactory.ai/#source",
+      "name": "Open Software Factory",
+      "codeRepository": "https://github.com/achisolomon/open-software-factory",
+      "license": "https://www.gnu.org/licenses/agpl-3.0.html"
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://opensoftwarefactory.ai/#website",
+      "name": "Open Software Factory",
+      "url": "https://opensoftwarefactory.ai/",
+      "about": {"@id": "https://opensoftwarefactory.ai/#software"}
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://opensoftwarefactory.ai/#faq",
+      "isPartOf": {"@id": "https://opensoftwarefactory.ai/#website"},
+      "about": {"@id": "https://opensoftwarefactory.ai/#software"},
+      "mainEntity": [
+        {"@type": "Question", "name": "What is Open Software Factory?", "acceptedAnswer": {"@type": "Answer", "text": "Open Software Factory is a free, open-source (AGPL-3.0) Claude Code plugin that gives you a team of AI agents (Team Lead, Architect, Developer, Tester, Security and more) to take your spec to a tested, reviewed release, and it stops for your approval before any push, merge or deploy."}},
+        {"@type": "Question", "name": "How do I install it in Claude Code?", "acceptedAnswer": {"@type": "Answer", "text": "Run the install line at the top of this page in a terminal. Then tell Claude Code: team lead, fix the typo in the log message. The Team Lead sets up your project the first time."}},
+        {"@type": "Question", "name": "Will the agents push, merge or deploy without my approval?", "acceptedAnswer": {"@type": "Answer", "text": "No. No push to a shared branch, merge to main, deploy, paid resource or data deletion happens without your explicit approval of that specific action. The trust model is in TRUST.md."}},
+        {"@type": "Question", "name": "What does it cost to run?", "acceptedAnswer": {"@type": "Answer", "text": "The factory is free. You pay only for your own Claude usage. Each agent runs on the smallest model that does its job well, and \"conserve my limits\" makes it cheaper."}},
+        {"@type": "Question", "name": "Does it work with Spec Kit, BMAD, OpenSpec or Superpowers?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Write the spec with any of them. The Product Manager checks it for gaps and does not rewrite it."}},
+        {"@type": "Question", "name": "Which agents are on the team?", "acceptedAnswer": {"@type": "Answer", "text": "Team Lead, Triage Classifier, Product Manager, Project Manager, Architect, Developer, Test Automation Engineer, Exploratory QA Engineer, DevOps, FinOps, Security, UX/UI Designer, Performance Engineer and Retro. The team keeps growing."}},
+        {"@type": "Question", "name": "How is it different from a collection of Claude Code subagents?", "acceptedAnswer": {"@type": "Answer", "text": "A collection gives you the agents. The factory adds the process: a Team Lead triages each request, calls only the reviewers the change needs, allows at most three fix rounds, and stops for your approval at every important decision."}},
+        {"@type": "Question", "name": "Who owns the code the agents write?", "acceptedAnswer": {"@type": "Answer", "text": "You do. The code the agents write in your own project is yours; the license covers the factory itself."}},
+        {"@type": "Question", "name": "Can I change the factory for my own team?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Override any agent for one project, or change the factory itself and send the change back as a pull request."}}
+      ]
+    }
+  ]
+}
+</script>
+<script src="app.js" defer></script>
+</head>
+<body id="top">
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="top" aria-label="Main">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Open Software Factory"><i></i><span>Open Software Factory</span></a>
+    <div class="links">
+      <a class="hide-s" href="#how">How it works</a>
+      <a class="hide-s" href="#team">The agent team</a>
+    </div>
+    <a class="btn small" href="#install">Install</a>
+    <a class="btn small ghost" href="https://github.com/achisolomon/open-software-factory">GitHub</a>
+  </div>
+</nav>
+
+<main id="main" tabindex="-1">
+<section class="hero" id="hero">
+  <div class="hero-art" aria-hidden="true">
+    <video muted loop playsinline preload="metadata" poster="art/scene-5-whole-floor.webp" src="art/hero.mp4"></video>
+  </div>
+  <div class="hero-shade"></div>
+  <div class="wrap">
+    <h1><span class="motto">Everyone can build a software factory. The best one will be built together.</span><span class="h1-sub">Open Software Factory, the <span class="nowrap">open-source</span> AI software team for Claude Code</span></h1>
+    <p class="lede">Your <span class="amber">spec</span> goes in, a tested, reviewed release comes out.</p>
+    <div class="code" id="install"><pre tabindex="0" role="group" aria-label="Install command">claude plugin marketplace add achisolomon/open-software-factory &amp;&amp; claude plugin install software-factory@software-factory-marketplace --scope user</pre><button type="button" hidden data-js aria-label="Copy install line">Copy</button></div>
+    <div class="cta">
+      <a class="btn" href="#how">See it work</a>
+    </div>
+  </div>
+  <button type="button" class="pause" hidden data-js aria-label="Pause animation" title="Pause animation"><span class="i-pause"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3 2h4v12H3zM9 2h4v12H9z"/></svg></span><span class="i-play" hidden data-js><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2l10 6-10 6z"/></svg></span></button>
+</section>
+
+<section class="doors" aria-label="Next steps">
+  <div class="wrap">
+    <div class="door">
+      <span class="n">Set up your project, once</span>
+      <div class="code"><pre tabindex="0" role="group" aria-label="Project setup command">/software-factory:factory-init</pre><button type="button" hidden data-js aria-label="Copy set-up command">Copy</button></div>
+    </div>
+    <div class="door">
+      <span class="n">Then bring a spec</span>
+      <div class="code"><pre tabindex="0" role="group" aria-label="Spec command">team lead, build docs/spec.md</pre><button type="button" hidden data-js aria-label="Copy spec command">Copy</button></div>
+    </div>
+    <div class="door">
+      <span class="n">Build it with us</span>
+      <div class="cta">
+        <a class="btn small" href="https://github.com/achisolomon/open-software-factory/issues?q=is%3Aopen+label%3A%22good+first+issue%22">Pick a first issue</a>
+        <a class="btn small ghost" href="https://github.com/achisolomon/open-software-factory/blob/main/CONTRIBUTING.md">How to contribute</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="gain">
+  <div class="wrap">
+    <div class="head"><span class="eyebrow">What you gain</span><h2>A whole team, and you keep the keys</h2></div>
+    <div class="gains">
+      <div class="gain"><div class="pic"><img src="art/scene-5-whole-floor.webp" alt="The whole team at work on the factory floor" loading="lazy" decoding="async"></div><h3>A full AI team in your editor</h3></div>
+      <div class="gain"><div class="pic"><img class="crop crop-review" src="art/scene-4-review.webp" alt="The Security agent stops the line at a faulty joint" loading="lazy" decoding="async"></div><h3>Quality you can check</h3></div>
+      <div class="gain"><div class="pic"><img class="crop crop-seal" src="art/scene-7-ship.webp" alt="The amber approval seal on the finished release" loading="lazy" decoding="async"></div><h3>You stay in control</h3></div>
+      <div class="gain"><div class="pic models" role="img" aria-label="Three model sizes: Haiku for lookups, Sonnet for the build, Opus for design and security"><span class="w34">Haiku · lookups</span><span class="w62">Sonnet · build</span><span class="w92">Opus · design, security</span></div><h3>Sensible model costs</h3></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="head"><span class="eyebrow">What is a software factory</span><h2>Follow one <span class="amber">spec</span> through the factory</h2></div>
+    <div class="journey">
+      <div class="stage">
+        <div class="frame" hidden data-js></div>
+        <nav class="rail" aria-label="Steps">
+          <a href="#step-1" aria-label="Step 1: Hand-over">01</a>
+          <a href="#step-2" aria-label="Step 2: The team is chosen">02</a>
+          <a href="#step-3" aria-label="Step 3: Build">03</a>
+          <a href="#step-4" aria-label="Step 4: Review">04</a>
+          <a href="#step-5" aria-label="Step 5: All together">05</a>
+          <a href="#step-6" aria-label="Step 6: Your review">06</a>
+          <a href="#step-7" aria-label="Step 7: Ship">07</a>
+        </nav>
+        <div class="who-card" hidden data-js></div>
+      </div>
+      <ol class="chapters">
+        <li class="chapter" id="step-1" data-name="Hand-over" data-who="You · Team Lead · Architect · Security · FinOps">
+          <div class="slot"><img src="art/scene-1-hand-over.webp" alt="You hand the amber spec to the Team Lead while the Architect, Security and FinOps agents wait along the factory line" width="1600" height="1200" decoding="async"></div>
+          <div class="card"><span class="num">Step 1 of 7</span><h3>You hand over the spec</h3></div>
+          <template class="acts"><li>You hand over the spec.</li><li>Takes it as it is. Calls the team.</li><li>Reads it for the design.</li><li>Looks for risks first.</li><li>Starts the cost estimate.</li></template>
+        </li>
+        <li class="chapter" id="step-2" data-name="The team is chosen" data-who="Team Lead · Architect · Security · FinOps">
+          <div class="slot"><img src="art/scene-2-team-chosen.webp" alt="The Team Lead triages the request while the Architect, Security and FinOps agents are called to the line" width="1600" height="1200" loading="lazy" decoding="async"></div>
+          <div class="card"><span class="num">Step 2 of 7</span><h3>The Team Lead picks the team</h3></div>
+          <template class="acts"><li>Triage: type, size, reviewers.</li><li>A design and small tasks.</li><li>Threat model.</li><li>Cost guardrails.</li><li data-name="The rest of the team">Called only when needed.</li></template>
+        </li>
+        <li class="chapter" id="step-3" data-name="Build" data-who="Team Lead · Developer · Developer · Tester">
+          <div class="slot"><img src="art/scene-3-build.webp" data-unfit="art/scene-3-build-unfit.webp" alt="Two Developers build the amber machine part by part while a Tester checks each finished task" width="1600" height="1200" loading="lazy" decoding="async"></div>
+          <div class="card"><span class="num">Step 3 of 7</span><h3>Developers build. Testers try to break it.</h3></div>
+          <template class="acts"><li>Hands out the tasks.</li><li>Builds one task, with tests.</li><li>Builds the next, side by side.</li><li>Verifies each task.</li></template>
+        </li>
+        <li class="chapter" id="step-4" data-name="Review" data-who="Architect · Security · FinOps · UX/UI · Developer">
+          <div class="slot"><img src="art/scene-4-review.webp" alt="Reviewers check the work from every side, and Security has stopped the line at one faulty white joint" width="1600" height="1200" loading="lazy" decoding="async"></div>
+          <div class="card"><span class="num">Step 4 of 7</span><h3>Every task is reviewed</h3></div>
+          <template class="acts"><li>Checks code against the design.</li><li>Usability and accessibility.</li><li>Reviews anything paid.</li><li>Finds a fault and stops the line.</li><li data-name="Developer">Fixes it. Three rounds at most.</li></template>
+        </li>
+        <li class="chapter" id="step-5" data-name="All together" data-who="The whole team">
+          <div class="slot"><img src="art/scene-5-whole-floor.webp" alt="The whole factory floor at work at once, with developers, a tester and the status board all busy" width="1600" height="1200" loading="lazy" decoding="async"></div>
+          <div class="card"><span class="num">Step 5 of 7</span><h3>The whole floor works at once</h3></div>
+          <template class="acts"><li>Reviews finished tasks.</li><li data-name="Developers and Tester">Tasks run in parallel.</li><li>Load tests the build.</li><li>Keeps the status board.</li></template>
+        </li>
+        <li class="chapter" id="step-6" data-name="Your review" data-who="You · Team Lead · the team">
+          <div class="slot"><img src="art/scene-6-your-review.webp" alt="You compare the finished result with your spec while the team stands by and waits for your answer" width="1600" height="1200" loading="lazy" decoding="async"></div>
+          <div class="card"><span class="num">Step 6 of 7</span><h3>You review</h3></div>
+          <template class="acts"><li>Presents the result. Waits.</li><li>You compare it with your spec.</li><li data-name="The team">Stands by until you answer.</li></template>
+        </li>
+        <li class="chapter" id="step-7" data-name="Ship" data-who="You · Team Lead · DevOps">
+          <div class="slot"><img src="art/scene-7-ship.webp" data-unfit="art/scene-7-ship-unfit.webp" alt="The finished release on the line, with the amber approval seal that waits for your yes" width="1600" height="1200" loading="lazy" decoding="async"></div>
+          <div class="card">
+            <span class="num">Step 7 of 7</span><h3>It ships, with your yes</h3>
+            <div class="approve-row" hidden data-js></div>
+            <div class="cta closing"><a class="btn small amber-btn" href="https://github.com/achisolomon/open-software-factory">Star it on GitHub</a><a class="btn small" href="#install">Now use it for real</a><a class="btn small ghost" href="#contribute">Or help build it</a></div>
+          </div>
+          <template class="acts"><li>You say yes.</li><li>Seals the release, after your yes.</li><li>Ships it.</li></template>
+        </li>
+      </ol>
+    </div>
+    <details class="astext"><summary>Read the 7 steps as text</summary>
+      <ol>
+        <li>You hand over a spec, written with the spec tool you like. The Product Manager checks it for gaps and never rewrites it.</li>
+        <li>The Team Lead classifies every request first: its type, its size and the reviewers it needs. Small work takes the fast path.</li>
+        <li>The Architect splits the design into small tasks. A Developer builds one task at a time, with unit tests, and the Test Engineer hunts for where it breaks.</li>
+        <li>Every task is reviewed. The Architect checks the code; Security, FinOps and UX can join. A finding goes back to the Developer, for at most three fix rounds.</li>
+        <li>Independent tasks can run side by side when you choose speed. The Team Lead posts a status board: who is running, blocked, done, and what is next.</li>
+        <li>The Team Lead stops at three gates: the requirements, the design with its cost, and the release. Nothing moves on until you approve.</li>
+        <li>No push, merge, deploy, paid resource or data deletion happens without your explicit approval. The Team Lead holds the release until you say yes.</li>
+      </ol>
+    </details>
+    <div class="vh" role="status"></div>
+    <template id="roles"><dl>
+      <dt>You</dt><dd>You write the spec and you approve. Nothing irreversible happens without your yes.</dd>
+      <dt>Spec</dt><dd>Your spec, in amber. The factory never rewrites it. Follow it through every picture.</dd>
+      <dt>Team Lead</dt><dd>Runs the process, delegates the work, enforces the gates and talks to you.</dd>
+      <dt>Architect</dt><dd>Designs the system, splits it into tasks and reviews the code.</dd>
+      <dt>Security</dt><dd>Threat model, security reviews and the final release gate.</dd>
+      <dt>FinOps</dt><dd>Estimates the cost before it is built and reviews changes that add paid resources.</dd>
+      <dt>Developer</dt><dd>Implements one task at a time, with unit tests, on a local branch.</dd>
+      <dt>Tester</dt><dd>The devil's advocate. Verifies each task and hunts for where it breaks.</dd>
+      <dt>UX/UI</dt><dd>User flows, screen specs, and usability and accessibility reviews.</dd>
+      <dt>DevOps</dt><dd>Environments, CI/CD and infrastructure as code, checked by dry runs first.</dd>
+      <dt>Performance</dt><dd>Finds what breaks under load and runs the load tests before a release.</dd>
+      <dt>Finding</dt><dd>A reviewer found a fault. It goes back to the Developer, for at most three fix rounds.</dd>
+      <dt>Approved</dt><dd>Your approval. The release ships only after it.</dd>
+    </dl></template>
+  </div>
+</section>
+
+<section id="triage">
+  <div class="wrap">
+    <div class="head"><span class="eyebrow">Try it here</span><h2>Give the factory a request</h2></div>
+    <div class="desk">
+      <ul class="picks" aria-label="Sample requests">
+        <li>Fix a typo in a log message</li>
+        <li>Update a dependency to its patch release</li>
+        <li>Add passkey login</li>
+        <li>Send alerts through a paid SMS provider</li>
+        <li>Build a new product from my spec</li>
+      </ul>
+      <div class="panel">
+        <span class="eyebrow">The factory answers</span>
+        <div id="triage-answer" aria-live="polite" aria-atomic="true">
+          <div class="path path-name">Feature slice</div>
+          <div class="lineup"><span class="chip yes">Triage<span class="vh">, called</span></span><span class="chip yes">Team Lead<span class="vh">, called</span></span><span class="chip yes">Product Manager<span class="vh">, called</span></span><span class="chip yes">Architect<span class="vh">, called</span></span><span class="chip yes">Developer<span class="vh">, called</span></span><span class="chip yes">Tester<span class="vh">, called</span></span><span class="chip yes">Security<span class="vh">, called</span></span><span class="chip">FinOps<span class="vh">, not called</span></span><span class="chip yes">UX/UI<span class="vh">, called</span></span><span class="chip">DevOps<span class="vh">, not called</span></span></div>
+          <ul class="why"><li><b>Security</b> called: login code always gets a security review</li><li><b>UX/UI</b> called: users will see new screens</li><li><b>FinOps</b> not called: nothing paid</li></ul>
+        </div>
+        <span class="hint">Simplified examples.</span>
+      </div>
+    </div>
+    <template data-answer="1">
+      <div class="path path-name">Fast path</div>
+      <div class="lineup"><span class="chip yes">Triage<span class="vh">, called</span></span><span class="chip yes">Team Lead<span class="vh">, called</span></span><span class="chip">Product Manager<span class="vh">, not called</span></span><span class="chip yes">Architect<span class="vh">, called</span></span><span class="chip yes">Developer<span class="vh">, called</span></span><span class="chip yes">Tester<span class="vh">, called</span></span><span class="chip">Security<span class="vh">, not called</span></span><span class="chip">FinOps<span class="vh">, not called</span></span><span class="chip">UX/UI<span class="vh">, not called</span></span><span class="chip">DevOps<span class="vh">, not called</span></span></div>
+      <ul class="why"><li><b>Security</b> not called: no login, secrets or dependencies touched</li><li><b>UX/UI</b> not called: no screen changes</li><li><b>FinOps</b> not called: nothing paid</li></ul>
+    </template>
+    <template data-answer="2">
+      <div class="path path-name">Fast path, plus Security</div>
+      <div class="lineup"><span class="chip yes">Triage<span class="vh">, called</span></span><span class="chip yes">Team Lead<span class="vh">, called</span></span><span class="chip">Product Manager<span class="vh">, not called</span></span><span class="chip yes">Architect<span class="vh">, called</span></span><span class="chip yes">Developer<span class="vh">, called</span></span><span class="chip yes">Tester<span class="vh">, called</span></span><span class="chip yes">Security<span class="vh">, called</span></span><span class="chip">FinOps<span class="vh">, not called</span></span><span class="chip">UX/UI<span class="vh">, not called</span></span><span class="chip">DevOps<span class="vh">, not called</span></span></div>
+      <ul class="why"><li><b>Security</b> called: a new or changed dependency</li><li><b>UX/UI</b> not called: no screen changes</li><li><b>FinOps</b> not called: nothing paid</li></ul>
+    </template>
+    <template data-answer="4">
+      <div class="path path-name">Full lifecycle</div>
+      <div class="lineup"><span class="chip yes">Triage<span class="vh">, called</span></span><span class="chip yes">Team Lead<span class="vh">, called</span></span><span class="chip yes">Product Manager<span class="vh">, called</span></span><span class="chip yes">Architect<span class="vh">, called</span></span><span class="chip yes">Developer<span class="vh">, called</span></span><span class="chip yes">Tester<span class="vh">, called</span></span><span class="chip yes">Security<span class="vh">, called</span></span><span class="chip yes">FinOps<span class="vh">, called</span></span><span class="chip">UX/UI<span class="vh">, not called</span></span><span class="chip">DevOps<span class="vh">, not called</span></span></div>
+      <ul class="why"><li><b>Security</b> called: a new dependency and new secrets</li><li><b>FinOps</b> called: a paid third-party API</li><li><b>UX/UI</b> not called: no screen changes</li></ul>
+    </template>
+    <template data-answer="5">
+      <div class="path path-name">Full lifecycle</div>
+      <div class="lineup"><span class="chip yes">Triage<span class="vh">, called</span></span><span class="chip yes">Team Lead<span class="vh">, called</span></span><span class="chip yes">Product Manager<span class="vh">, called</span></span><span class="chip yes">Architect<span class="vh">, called</span></span><span class="chip yes">Developer<span class="vh">, called</span></span><span class="chip yes">Tester<span class="vh">, called</span></span><span class="chip yes">Security<span class="vh">, called</span></span><span class="chip yes">FinOps<span class="vh">, called</span></span><span class="chip yes">UX/UI<span class="vh">, called</span></span><span class="chip yes">DevOps<span class="vh">, called</span></span></div>
+      <ul class="why"><li><b>Security</b> called: the secrets and logins of a new product</li><li><b>FinOps</b> called: cost model before anything is built</li><li><b>UX/UI</b> called: flows and screens</li><li><b>DevOps</b> called: a new product needs environments and a pipeline</li></ul>
+    </template>
+  </div>
+</section>
+
+<section id="team">
+  <div class="wrap">
+    <div class="head"><span class="eyebrow">The agent team</span><h2>Meet the team. It keeps growing.</h2><p class="legend"><span data-m="h">Haiku</span><span data-m="s">Sonnet</span><span data-m="o">Opus</span></p></div>
+    <div class="team-grid">
+      <div class="names" role="group" aria-label="Agents" hidden data-js></div>
+      <div class="panel" aria-live="polite">
+<!-- roster:start -->
+<ul class="roster">
+<li><h3>Team Lead</h3><p>Runs the process: plans the work, hands it to the right specialist, keeps the status board, holds the gates and talks to you.</p><dl><dt>Model</dt><dd>Your session&#x27;s model (Opus by default)</dd></dl></li>
+<li><h3>Triage Classifier</h3><p>Sorts every new request first, so small work takes the fast path and big work gets the full process. Read-only.</p><dl><dt>Model</dt><dd>Haiku</dd></dl></li>
+<li><h3>Product Manager</h3><p>Turns your idea or spec into a clear PRD and a backlog of stories with testable acceptance criteria, and checks your spec for gaps.</p><dl><dt>Model</dt><dd>Opus</dd></dl></li>
+<li><h3>Project Manager</h3><p>Keeps the GitHub issues and the project board current as work moves, and audits the board before each gate.</p><dl><dt>Model</dt><dd>Haiku</dd></dl></li>
+<li><h3>Software Architect</h3><p>Designs the system, writes the decisions and contracts, breaks the work into tasks and reviews the code.</p><dl><dt>Model</dt><dd>Opus</dd></dl></li>
+<li><h3>Software Developer</h3><p>Builds one task at a time with unit tests on a local branch, and fixes what the reviewers find.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>Test Automation Engineer</h3><p>The devil&#x27;s advocate: plans the tests, writes integration and end-to-end tests, and hunts for where the code breaks.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>Exploratory QA Engineer</h3><p>Explores the running app like a user, in local or disposable setups only, and turns each bug into a failing repro test.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>DevOps Engineer</h3><p>Sets up environments, containers, CI/CD and infrastructure as code, and checks them with dry runs.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>FinOps Engineer</h3><p>Models the cost with sourced prices, sets cost guardrails and reviews changes for what they will cost.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>Security Engineer</h3><p>Threat-models the design, sets the security requirements, reviews and scans the code, and holds the final release gate.</p><dl><dt>Model</dt><dd>Opus</dd></dl></li>
+<li><h3>UX/UI Designer</h3><p>Designs user flows and screens, and reviews UI changes for usability and accessibility.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>Performance Engineer</h3><p>Load-tests the system and finds what breaks under load, before a merge to main or a deploy.</p><dl><dt>Model</dt><dd>Opus</dd></dl></li>
+<li><h3>Retro</h3><p>Once a day, reads how the sessions went and drafts small fixes for the causes. They wait for your yes.</p><dl><dt>Model</dt><dd>Sonnet</dd></dl></li>
+<li><h3>Your agent</h3><p>Add your own specialist as one agent file. Open a discussion on the repo to share the idea.</p><dl><dt>Model</dt><dd>Your choice</dd></dl><code class="excerpt">---
+name: triage-classifier
+description: Triage Classifier of the Software Factory. Use it first on every new request the Team Lead receives (except a plain status question) to classify the work - type, size, the lifecycle path, which conditional reviewers are needed, and whether it is clear enough to start - so small work exits early and the reviewer selection is deterministic. Read-only and fast; it never plans, designs or writes code.
+tools: Read, Grep, Glob, Bash
+model: haiku
+color: gray
+---</code><a href="https://github.com/achisolomon/open-software-factory/blob/main/plugin/agents/triage-classifier.md">A real agent file: plugin/agents/triage-classifier.md</a><a class="btn small" href="https://github.com/achisolomon/open-software-factory/discussions">Propose an agent</a></li>
+</ul>
+<!-- roster:end -->
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="proof">
+  <div class="wrap">
+    <div class="head"><span class="eyebrow">Proof</span><h2>Real runs</h2></div>
+    <div class="proof">
+      <a class="movie" href="https://github.com/achisolomon/open-software-factory#see-it-work" aria-label="Watch the team work, opens on GitHub"><span class="movie-body"><span class="play"></span><b>Watch the team work</b><svg class="ext" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M9 2h5v5h-1.6V4.7L7.7 9.4 6.6 8.3l4.7-4.7H9zM3 4h4v1.6H4.6v5.8h5.8V9H12v4H3z"/></svg></span></a>
+      <div class="stats">
+        <a class="stat" href="https://github.com/achisolomon/open-software-factory/pull/144"><b>42</b><span>files changed: the factory built its own QA agent, PR #144</span></a>
+        <div class="stat"><b>31</b><span>behavior evals, as of 0.10.0</span></div>
+        <div class="stat"><b>407</b><span>offline tests, as of 0.10.0</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="join" id="contribute">
+  <div class="wrap">
+    <span class="eyebrow">Open source · GNU AGPL-3.0</span>
+    <h2>Use it. Improve it. <a href="https://github.com/achisolomon/open-software-factory">Star it.</a></h2>
+    <div class="ways">
+      <a class="way" href="#install"><b>Use it</b></a>
+      <a class="way" href="https://github.com/achisolomon/open-software-factory/issues/new"><b>Report a gap</b></a>
+      <a class="way" href="https://github.com/achisolomon/open-software-factory/labels/good%20first%20issue"><b>Send code</b></a>
+      <a class="way" href="https://github.com/achisolomon/open-software-factory/discussions"><b>Shape it</b></a>
+    </div>
+    <div class="cta">
+      <a class="btn ghost" href="https://github.com/achisolomon/open-software-factory/blob/main/CONTRIBUTING.md">Read the contributor guide</a>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <div class="head"><span class="eyebrow">Questions</span><h2>Before you install</h2></div>
+    <div class="faq">
+      <details><summary>What is Open Software Factory?</summary><p>Open Software Factory is a free, open-source (AGPL-3.0) Claude Code plugin that gives you a team of AI agents (Team Lead, Architect, Developer, Tester, Security and more) to take your spec to a tested, reviewed release, and it stops for your approval before any push, merge or deploy.</p></details>
+      <details><summary>How do I install it in Claude Code?</summary><p>Run the install line at the top of this page in a terminal. Then tell Claude Code: team lead, fix the typo in the log message. The Team Lead sets up your project the first time.</p></details>
+      <details><summary>Will the agents push, merge or deploy without my approval?</summary><p>No. No push to a shared branch, merge to main, deploy, paid resource or data deletion happens without your explicit approval of that specific action. The trust model is in <a href="https://github.com/achisolomon/open-software-factory/blob/main/docs/TRUST.md">TRUST.md</a>.</p></details>
+      <details><summary>What does it cost to run?</summary><p>The factory is free. You pay only for your own Claude usage. Each agent runs on the smallest model that does its job well, and "conserve my limits" makes it cheaper.</p></details>
+      <details><summary>Does it work with Spec Kit, BMAD, OpenSpec or Superpowers?</summary><p>Yes. Write the spec with any of them. The Product Manager checks it for gaps and does not rewrite it.</p></details>
+      <details class="more"><summary>More questions</summary>
+      <details><summary>Which agents are on the team?</summary><p>Team Lead, Triage Classifier, Product Manager, Project Manager, Architect, Developer, Test Automation Engineer, Exploratory QA Engineer, DevOps, FinOps, Security, UX/UI Designer, Performance Engineer and Retro. The team keeps growing.</p></details>
+      <details><summary>How is it different from a collection of Claude Code subagents?</summary><p>A collection gives you the agents. The factory adds the process: a Team Lead triages each request, calls only the reviewers the change needs, allows at most three fix rounds, and stops for your approval at every important decision.</p></details>
+      <details><summary>Who owns the code the agents write?</summary><p>You do. The code the agents write in your own project is yours; the license covers the factory itself.</p></details>
+      <details><summary>Can I change the factory for my own team?</summary><p>Yes. Override any agent for one project, or change the factory itself and send the change back as a pull request.</p></details>
+      </details>
+    </div>
+  </div>
+</section>
+<p class="vh" id="status" role="status"></p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <nav aria-label="Footer">
+      <a href="https://github.com/achisolomon/open-software-factory">Source</a>
+      <a href="https://github.com/achisolomon/open-software-factory/releases">Releases</a>
+      <a href="https://github.com/achisolomon/open-software-factory/blob/main/CONTRIBUTING.md">Contribute</a>
+      <a href="https://github.com/achisolomon/open-software-factory/issues/new">Report a problem</a>
+    </nav>
+    <span>© 2026 Open Software Factory contributors, licensed under GNU AGPL-3.0</span>
+  </div>
+</footer>
+</body>
+</html>
