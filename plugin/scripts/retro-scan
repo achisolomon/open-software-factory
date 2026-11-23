@@ -3,7 +3,9 @@
 
 Usage:
   retro-scan --discover        factory projects seen in the last 30 days, with session counts and worktrees
-  retro-scan --due             projects due for a retro: origin main moved since the last retro and 2+ sessions
+  retro-scan --due [--under DIR]
+                               projects due for a retro: origin main moved since the last retro and 2+ sessions;
+                               with --under, only DIR's own project or the projects up to 3 folders below DIR
   retro-scan --project PATH [--since ISO] [--branch NAME] [--out FILE] [--no-github]
                                metrics for one project since its last retro (default: the last 7 days)
 
@@ -553,12 +555,23 @@ def scan_floor():
     return floor
 
 
-def due():
-    """(projects due for a retro, projects skipped with a reason). Scans transcripts once for all projects."""
+def scope(folder):
+    """The projects a session opened in this folder covers: its own project, else the factory projects up to BELOW_DEPTH
+    folders below it (none for the home folder or above)."""
+    root = project_root(folder)
+    return {root} if root else set(factory_below(folder))
+
+
+def due(under=None):
+    """(projects due for a retro, projects skipped with a reason). Scans transcripts once for all projects. With under,
+    only the projects that folder covers are checked, so no other project's git is run."""
     sessions = list(main_sessions(scan_floor()))
+    wanted = scope(under) if under else None
     out, skipped = [], []
     for p in discover(sessions):
         root = p["project"]
+        if wanted is not None and root not in wanted:
+            continue
         sha, reason = remote_main(root)
         if not sha:
             skipped.append({"project": root, "reason": reason})
@@ -594,9 +607,12 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--due-out", help="with --project: also write <folder>/due.json, as retro-daily does")
     ap.add_argument("--no-github", action="store_true")
+    ap.add_argument("--under", help="with --due: only the projects a session opened in this folder covers")
     a = ap.parse_args(argv)
     if a.due_out and not a.project:
         ap.error("--due-out needs --project")
+    if a.under and not a.due:
+        ap.error("--under needs --due")
     for target in (a.out, a.due_out and str(Path(a.due_out) / overlay.DUE_FILE)):
         problem = target and out_problem(target)
         if problem:
@@ -605,7 +621,7 @@ def main(argv=None):
     if a.discover:
         result = discover()
     elif a.due:
-        result, skipped = due()
+        result, skipped = due(os.path.realpath(a.under) if a.under else None)
         for item in skipped:  # stderr keeps stdout a plain list for the daily launcher
             print(f"retro-scan: skipped {item['project']}: {item['reason']}", file=sys.stderr)
     else:
@@ -619,8 +635,10 @@ def main(argv=None):
         result = measure(root, since, branch=a.branch, with_github=not a.no_github)
     if SKIPPED and not a.project:
         print(f"retro-scan: skipped {len(SKIPPED)} unreadable transcript file(s)", file=sys.stderr)
-    if BLOCKED:
-        print(f"retro-scan: cannot read {len(BLOCKED)} folder(s): {os.strerror(errno.EPERM)}", file=sys.stderr)
+    under = os.path.realpath(a.under) if a.under else None
+    blocked = [f for f in BLOCKED if not under or f == under or f.startswith(under + os.sep)]  # only this run's scope
+    if blocked:
+        print(f"retro-scan: cannot read {len(blocked)} folder(s): {os.strerror(errno.EPERM)}", file=sys.stderr)
     if a.due_out:  # the in-session retro cannot write this file itself (#198); same format as retro-daily
         Path(a.due_out).mkdir(parents=True, exist_ok=True)
         (Path(a.due_out) / overlay.DUE_FILE).write_text(json.dumps([root]) + "\n", encoding="utf-8")

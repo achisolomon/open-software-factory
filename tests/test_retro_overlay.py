@@ -209,6 +209,12 @@ class RetroOverlayHookTests(unittest.TestCase):
             code = retro_overlay.main()
         self.assertEqual((code, out.getvalue()), (0, ""))
 
+    def test_an_old_timed_retro_job_is_named_once_with_the_command_that_removes_it(self):
+        self.assertNotIn("old timed job", self.run_hook())
+        (self.state / "bin").mkdir()
+        (self.state / "bin" / "retro-daily").write_text("x")
+        self.assertIn(f"{ROOT / 'scripts' / 'retro-schedule'} install", self.run_hook())
+
     def test_retro_failed_is_cut_and_escaped(self):
         (self.state / "retro-failed").write_text("boom\n\x1b[2J" + "x" * 300)
         context = self.run_hook()

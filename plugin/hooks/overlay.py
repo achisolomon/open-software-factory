@@ -33,6 +33,7 @@ REQUIRED = ("id", "kind", "class", "role", "text", "evidence")
 ALL_ROLES = "all"
 SECURITY_ROLE = "security-engineer"
 RUNS_DIR = "retros"  # <state>/retros/<day>/<slug>/ is one project's retro run
+AUTO_FILE = "retro-auto"  # in <state>: the user turned the daily retro on (scripts/retro-schedule install)
 DUE_FILE = "due.json"  # in the run folder: the launcher lists the due project path, out of the agent's reach
 WORK_DIR = "work"  # the only run subfolder the agent writes; the report sits here (scripts/retro-daily keeps a copy)
 LINE_CAP = 100

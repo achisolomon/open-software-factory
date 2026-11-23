@@ -1,10 +1,12 @@
 """Tests for scripts/retro-scan on fixture transcripts."""
 
 import ast
+import contextlib
 import datetime
 import errno
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -219,6 +221,20 @@ class DiscoverTests(unittest.TestCase):
         with mock.patch.object(rs.os, "scandir", side_effect=PermissionError(errno.EPERM, os.strerror(errno.EPERM))):
             self.assertEqual(rs.factory_below(hidden), ())
         self.assertEqual(rs.BLOCKED, {hidden})
+
+    def test_a_scoped_due_run_reports_only_blocked_folders_in_its_scope(self):
+        loader = importlib.machinery.SourceFileLoader("retro_scan_scope", str(SCRIPT))
+        rs = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(rs)
+        mine, other = str(self.f.base / "work"), str(self.f.base / "elsewhere")
+        for under, expected in ((mine, False), (other, True)):
+            rs.BLOCKED.clear()
+            rs.BLOCKED.add(other)
+            err = io.StringIO()
+            with mock.patch.object(rs, "due", return_value=([], [])), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                rs.main(["--due", "--under", under])
+            self.assertEqual("cannot read 1 folder(s)" in err.getvalue(), expected, under)
 
     def test_an_unreadable_folder_below_the_session_folder_does_not_stop_the_scan(self):
         work, repo = str(self.f.base / "work"), str(self.f.repo)
@@ -541,6 +557,26 @@ class RobustnessTests(unittest.TestCase):
                 mock.patch.object(self.scan, "session_cwd", wraps=self.scan.session_cwd) as reads:
             due, skipped = self.scan.due()
         self.assertEqual((len(due), skipped, reads.call_count), (2, [], 4))
+
+    def test_due_under_a_folder_checks_only_the_projects_it_covers(self):
+        work = self.f.base / "work"
+        other = work / "other"
+        (other / "docs" / "factory").mkdir(parents=True)
+        (other / "docs" / "factory" / "status.md").write_text("# Status\n")
+        for repo in (self.repo, str(other)):
+            self.f.session(repo, [user("a", NOW - 100, repo)])
+            self.f.session(repo, [user("b", NOW - 50, repo)])
+        asked = []
+        with mock.patch.object(self.scan, "remote_main", side_effect=lambda p: asked.append(p) or ("abc", None)):
+            inside = self.scan.due(self.repo + "/.claude/worktrees/fix")[0]
+            beside = self.scan.due(str(work))[0]
+            self.scan.factory_below.cache_clear()
+            with mock.patch.object(self.scan.Path, "home", return_value=work):
+                home = self.scan.due(str(work))[0]
+        self.assertEqual([d["project"] for d in inside], [self.repo])
+        self.assertEqual(sorted(d["project"] for d in beside), sorted([self.repo, str(other)]))
+        self.assertEqual(home, [])  # a session in the home folder starts no retro
+        self.assertEqual(asked.count(str(other)), 1)  # git ran only where the folder covers the project
 
     def test_remote_main_never_prompts_and_has_a_short_timeout(self):
         completed = subprocess.CompletedProcess([], 0, stdout="abc\trefs/heads/main\n", stderr="")

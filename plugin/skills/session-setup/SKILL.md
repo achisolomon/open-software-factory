@@ -24,5 +24,5 @@ Goal: fewer permission prompts and a safe auto-compact threshold, written to the
    - After a few tasks, run the built-in `/fewer-permission-prompts` to harvest more exact read-only rules.
 6. Record the chosen `Auto-compact` value in `project-facts.md` Preferences if it is not there.
 7. **Retro Engine (once per machine).** STATE is `$SOFTWARE_FACTORY_HOME`, else `~/.software-factory`. If `<STATE>/retro-settings.json` does not exist, ask the user one question:
-   - "Run the retro once a day, only for projects whose main changed? It runs on this machine." Options: yes with an hour (default 9), or no.
-   Do not offer auto-fix: the mode is always `draft`, and every fix waits for the user's yes. Write `{"mode": "draft"}` to `<STATE>/retro-settings.json`. On yes, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/retro-schedule install --hour <hour>` (the user approves it). On no, tell the user they can run `/software-factory:retro` any time.
+   - "Run the retro once a day, only for projects whose main changed? The first session of the day in a project starts it in the background, with that session's folder access." Options: yes or no.
+   Do not offer auto-fix: the mode is always `draft`, and every fix waits for the user's yes. Write `{"mode": "draft"}` to `<STATE>/retro-settings.json`. On yes, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/retro-schedule install` (the user approves it). On no, tell the user they can run `/software-factory:retro` any time.
