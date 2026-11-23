@@ -2,6 +2,11 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
+## 0.10.2 (2026-11-23)
+
+- **The project has a website: [opensoftwarefactory.ai](https://opensoftwarefactory.ai/).** The plugin's `homepage` now points there and the README links to it. The plugin shows as "Open Software Factory"; the plugin and marketplace names (`software-factory@software-factory-marketplace`) are unchanged.
+- The old `docs/index.html` redirect page is removed. `docs/TRUST.md`, `docs/provenance.md` and `docs/improvement-backlog.md` stay.
+
 ## 0.10.1 (2026-11-22)
 
 - **Fewer questions.** A week of traces showed 217 questions asked of the user, and 56% were answered with the recommended first option. The Team Lead now decides a reversible, inside-the-repo choice itself (naming, wording, equivalent implementations, layout, test data, ordering), says so in one line, and asks only at approval gates, for irreversible or outward-facing steps, when the user's words conflict, or when options differ in scope or cost.
