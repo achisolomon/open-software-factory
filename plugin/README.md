@@ -4,14 +4,15 @@ A team of AI agents for Claude Code that builds software end to end: a Team Lead
 
 Install:
 
-```text
-/plugin install software-factory --marketplace achisolomon/software-factory
+```bash
+claude plugin marketplace add achisolomon/open-software-factory && claude plugin install software-factory@software-factory-marketplace --scope user
 ```
 
 This folder is the plugin itself: `agents/`, `skills/`, `hooks/`, `reference/` and `scripts/review-route`. Docs, evals and tests live in the repository root.
 
-- Setup, usage and the full team: https://github.com/achisolomon/software-factory#readme
-- What each hook does and why: https://github.com/achisolomon/software-factory/blob/main/docs/TRUST.md
-- Release notes: https://github.com/achisolomon/software-factory/blob/main/CHANGELOG.md
+- Website: https://opensoftwarefactory.ai/
+- Setup, usage and the full team: https://github.com/achisolomon/open-software-factory#readme
+- What each hook does and why: https://github.com/achisolomon/open-software-factory/blob/main/docs/TRUST.md
+- Release notes: https://github.com/achisolomon/open-software-factory/blob/main/CHANGELOG.md
 
 License: AGPL-3.0-only (see `LICENSE`).
