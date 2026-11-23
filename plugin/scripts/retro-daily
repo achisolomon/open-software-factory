@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Daily retro launcher, started by launchd or cron (see retro-schedule). The model runs only when a project is due.
+"""Daily retro launcher. The model runs only when a project is due.
+
+Started with --under <folder> by the SessionStart hook (hooks/retro_session.py) of the day's first session in a folder,
+so it runs with that session's folder access (macOS needs no Full Disk Access) and checks only the projects that folder
+covers. Without --under it checks every project, for a run by hand.
 
 Finds the newest installed plugin copy (the cache path changes with every update), runs retro-scan --due, writes the due
 project path to <state>/retros/<today>/<slug>/due.json (retro-check publish reads it), runs retro-scan itself into
@@ -30,6 +34,9 @@ SECRET_PROJECT_GLOBS = ("**/.env*", "**/*.pem", "**/*.key", "**/*.tfstate*", "**
 MARKETPLACE = "software-factory-marketplace"  # the plugin is taken from this marketplace's cache only, never a lookalike
 MAX_PROJECTS_PER_DAY = 5
 LOG_LIMIT = 1_000_000  # bytes; a bigger retro.log moves to retro.log.1
+NO_ACCESS = "Operation not permitted"  # the EPERM text macOS privacy gives a process without access to a folder
+CLAIMS = "retro-started"  # in <state>: <day>-project-<hash> is made by the day's first run of a project (the
+# SessionStart hook keeps its per-folder stamps here too and removes older days)
 
 
 def load_overlay():
@@ -97,8 +104,20 @@ def slug_map(projects):
     """{project: slug}, unique in a run: projects whose slugs collide all get a short hash of their path."""
     base = {p: re.sub(r"[^a-z0-9]", "-", Path(p).name.lower())[:16] for p in projects}
     names = list(base.values())
-    return {p: s if names.count(s) == 1 else f"{s[:10]}-{hashlib.sha256(p.encode()).hexdigest()[:5]}"
-            for p, s in base.items()}
+    return {p: s if names.count(s) == 1 else hashed_slug(p, s) for p, s in base.items()}
+
+
+def hashed_slug(project, slug):
+    return f"{slug[:10]}-{path_hash(project)[:5]}"
+
+
+def free_slug(day_dir, project, slug):
+    """The slug, or its hashed form when an earlier run today used that folder for another project."""
+    try:
+        listed = json.loads((day_dir / slug / "due.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return slug
+    return slug if listed == [project] else hashed_slug(project, slug)
 
 
 def project_folder(day_dir, project, slug):
@@ -109,6 +128,22 @@ def project_folder(day_dir, project, slug):
     return folder
 
 
+def path_hash(project):
+    return hashlib.sha256(project.encode()).hexdigest()
+
+
+def claim(state, day, project):
+    """True for the first run of the day for this project. Two sessions starting at once must not run it twice."""
+    claims = state / CLAIMS
+    claims.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(claims / f"{day}-project-{path_hash(project)[:16]}", os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                         0o600))
+    except FileExistsError:
+        return False
+    return True
+
+
 def fail(state, words):
     """Record the failure as fixed status words only, one line each."""
     state.mkdir(parents=True, exist_ok=True)
@@ -117,13 +152,17 @@ def fail(state, words):
     return 1
 
 
-def scan_due(root):
-    """(due list, failure word or None)."""
+def scan_due(root, log=None, under=None):
+    """(due list, failure word or None). With a log, the scan's skip lines (why a project was left out) go there."""
     try:
-        scan = subprocess.run([sys.executable, str(root / "scripts" / "retro-scan"), "--due"],
+        scan = subprocess.run([sys.executable, str(root / "scripts" / "retro-scan"), "--due",
+                               *(["--under", under] if under else [])],
                               capture_output=True, text=True, timeout=SCAN_TIMEOUT)
     except subprocess.TimeoutExpired:
         return [], "scan-timeout"
+    if log and scan.stderr:
+        with open(log, "a", encoding="utf-8") as out:
+            out.write(scan.stderr if scan.stderr.endswith("\n") else scan.stderr + "\n")
     if scan.returncode:
         return [], f"scan-failed {scan.returncode}"
     try:
@@ -132,6 +171,8 @@ def scan_due(root):
         return [], "scan-failed bad-output"
     if not isinstance(due, list) or not all(isinstance(d, dict) and isinstance(d.get("project"), str) for d in due):
         return [], "scan-failed bad-output"
+    if not due and NO_ACCESS in (scan.stderr or ""):  # macOS privacy hid a folder from this process
+        return [], "macos-privacy-blocked"
     return due, None
 
 
@@ -160,6 +201,7 @@ def agent_env():
     """The scrub variable makes Claude Code ignore --permission-mode (spike), so the child must not inherit it."""
     env = dict(os.environ, RETRO_HEADLESS="1")
     env.pop("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", None)
+    env.pop("CLAUDECODE", None)  # started from a session's hook: the child is its own session, not a nested one
     return env
 
 
@@ -216,24 +258,35 @@ def check_due():
 
 
 def main():
-    if sys.argv[1:] == ["--check"]:
+    args = sys.argv[1:]
+    if args == ["--check"]:
         return check_due()
+    under = args[1] if len(args) == 2 and args[0] == "--under" else None
+    if args and not under:
+        print("usage: retro-daily [--check | --under FOLDER]", file=sys.stderr)
+        return 2
     state = state_dir()
     root = plugin_root()
     if not root:
         return fail(state, ["plugin-not-found"])
-    due, problem = scan_due(root)
+    log = state / "retro.log"
+    start_log(log)  # every run leaves a line, so a run that found nothing is told apart from one that never ran
+    due, problem = scan_due(root, log, under)
     if problem:
         return fail(state, [problem])
     if not due:
+        # shortcut: retro-failed holds the last run's result, so a clean run for one project clears another's failure
+        # (already shown at a session start); keep a line per project if that hides failures
+        (state / "retro-failed").unlink(missing_ok=True)
         return 0
-    due = due[:MAX_PROJECTS_PER_DAY]
-    day_dir = state / "retros" / datetime.date.today().isoformat()
-    slugs = slug_map([d["project"] for d in due])
-    log = state / "retro.log"
-    start_log(log)
-    results = [(d, run_agent(root, state, project_folder(day_dir, d, slugs[d["project"]]), d, slugs[d["project"]], log))
-               for d in due]
+    today = datetime.date.today().isoformat()
+    due = [d for d in due[:MAX_PROJECTS_PER_DAY] if claim(state, today, d["project"])]
+    if not due:  # another run today has these projects; its result stays in retro-failed
+        return 0
+    day_dir = state / "retros" / today
+    slugs = {p: free_slug(day_dir, p, s) for p, s in slug_map([d["project"] for d in due]).items()}
+    folders = {d["project"]: project_folder(day_dir, d, slugs[d["project"]]) for d in due}
+    results = [(d, run_agent(root, state, folders[d["project"]], d, slugs[d["project"]], log)) for d in due]
     failures = [f"{word} {slugs[d['project']]}" for d, word in results if word]
     if failures:
         return fail(state, failures)

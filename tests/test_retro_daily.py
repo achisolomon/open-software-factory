@@ -60,6 +60,9 @@ class RetroDailyTests(unittest.TestCase):
         root = mock.patch.object(self.daily, "plugin_root", return_value=Path("/opt/plugin"))
         root.start()
         self.addCleanup(root.stop)
+        argv = mock.patch.object(self.daily.sys, "argv", ["retro-daily"])  # not the test runner's own arguments
+        argv.start()
+        self.addCleanup(argv.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -232,6 +235,65 @@ class RetroDailyTests(unittest.TestCase):
         with mock.patch.object(self.daily.subprocess, "run", return_value=scan):
             self.assertEqual(self.daily.scan_due(Path("/opt/plugin")), ([{"project": "/w/alpha"}], None))
 
+    def test_a_scan_blocked_by_macos_privacy_is_named_as_such(self):
+        skip = "retro-scan: skipped /w/alpha: fatal: Unable to read current working directory: Operation not permitted"
+        scan = subprocess.CompletedProcess([], 0, "[]", skip)
+        with mock.patch.object(self.daily.subprocess, "run", return_value=scan):
+            self.assertEqual(self.daily.main(), 1)
+        self.assertEqual((self.state / "retro-failed").read_text(), "macos-privacy-blocked\n")
+        log = (self.state / "retro.log").read_text().splitlines()
+        self.assertEqual((log[0][:3], log[1:]), ("===", [skip]))
+
+    def test_under_scopes_the_due_scan_to_the_session_folder(self):
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return done(0, "[]")
+
+        with mock.patch.object(self.daily.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(self.daily.sys, "argv", ["retro-daily", "--under", "/w/alpha"]):
+            self.assertEqual(self.daily.main(), 0)
+        self.assertEqual(seen[0][-3:], ["--due", "--under", "/w/alpha"])
+
+    def test_a_bad_argument_is_refused_before_any_scan(self):
+        with mock.patch.object(self.daily.subprocess, "run") as run, contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.object(self.daily.sys, "argv", ["retro-daily", "--under"]):
+            self.assertEqual(self.daily.main(), 2)
+        run.assert_not_called()
+
+    def test_a_second_run_on_the_same_day_skips_a_project_the_first_already_started(self):
+        with mock.patch.object(self.daily.sys, "argv", ["retro-daily"]):
+            self.assertEqual(len(self.run_main(["/w/alpha"], [0])[1]), 1)
+            self.assertEqual(self.run_main(["/w/alpha"], [0]), (0, []))
+
+    def test_a_project_run_under_another_slug_earlier_today_is_not_run_again(self):
+        self.assertEqual(len(self.run_main(["/a/web", "/b/web"], [0, 0])[1]), 2)  # slugs web-<hash> here
+        self.assertEqual(self.run_main(["/a/web"], [0]), (0, []))  # plain slug web now, same project
+
+    def test_a_run_folder_used_today_by_another_project_is_not_shared(self):
+        self.run_main(["/a/web"], [0])
+        self.run_main(["/b/web"], [0])
+        day = next((self.state / "retros").iterdir())
+        listed = sorted(json.loads((f / "due.json").read_text()) for f in day.iterdir())
+        self.assertEqual(listed, [["/a/web"], ["/b/web"]])
+
+    def test_a_run_whose_projects_another_run_has_leaves_its_failure_in_place(self):
+        self.run_main(["/w/alpha"], [1])
+        self.assertEqual(self.run_main(["/w/alpha"], []), (0, []))
+        self.assertTrue((self.state / "retro-failed").exists())
+
+    def test_the_headless_child_is_not_marked_as_nested_in_the_session_that_started_it(self):
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            self.assertNotIn("CLAUDECODE", self.daily.agent_env())
+
+    def test_a_run_with_nothing_due_still_logs_and_clears_an_old_failure(self):
+        self.state.mkdir(parents=True)
+        (self.state / "retro-failed").write_text("macos-privacy-blocked\n")
+        self.assertEqual(self.run_main([], [])[0], 0)
+        self.assertFalse((self.state / "retro-failed").exists())
+        self.assertEqual([l[:3] for l in (self.state / "retro.log").read_text().splitlines()], ["===", "SEC"])
+
     def plant(self, cache, marketplace, versions):
         for v in versions:
             (cache / marketplace / "software-factory" / v / "agents").mkdir(parents=True)
@@ -336,72 +398,66 @@ class RetroScheduleTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="retro-schedule-")
         self.home = Path(os.path.realpath(self.tmp.name))
         self.addCleanup(self.tmp.cleanup)
+        self.state = self.home / "state"
         self.schedule = load("retro-schedule")
-        self.crontab = ["0 9 * * * x retro-daily # software-factory-retro"]
-        self.launchctl = []
+        self.crontab = ["5 * * * * backup.sh", "0 9 * * * x retro-daily # software-factory-retro",
+                        "0 9 * * * x retro-daily --check # software-factory-retro.check"]
+        self.calls = []
 
-    def fake_job_tools(self):
+    def fake_job_tools(self, platform):
         """Temp HOME, and no real launchctl or crontab. subprocess.run is patched only inside these tests."""
-        env = {"HOME": str(self.home), "SOFTWARE_FACTORY_HOME": str(self.home / "state")}
         stack = contextlib.ExitStack()
-        stack.enter_context(mock.patch.dict(os.environ, env))
+        stack.enter_context(mock.patch.dict(os.environ, {"HOME": str(self.home), "SOFTWARE_FACTORY_HOME": str(self.state)}))
         stack.enter_context(mock.patch.object(self.schedule.subprocess, "run", side_effect=self.fake_run))
+        stack.enter_context(mock.patch.object(self.schedule.sys, "platform", platform))
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         return stack
 
     def fake_run(self, cmd, **kw):
-        if cmd[0] == "launchctl":
-            self.launchctl.append(cmd)
-        elif cmd[:2] == ["crontab", "-"]:
+        self.calls.append(cmd)
+        if cmd[:2] == ["crontab", "-"]:
             self.crontab = kw["input"].splitlines()
         return subprocess.CompletedProcess(cmd, 0, "\n".join(self.crontab), "")
 
-    def test_check_job_has_its_own_plist_label_and_flag_and_uninstall_leaves_the_daily_job(self):
+    def plant_old_job(self):
         agents = self.home / "Library" / "LaunchAgents"
-        with self.fake_job_tools(), mock.patch.object(self.schedule.sys, "platform", "darwin"):
-            self.schedule.main(["install", "--check"])
+        agents.mkdir(parents=True)
+        for name in ("dev.software-factory.retro.plist", "dev.software-factory.retro.check.plist", "other.plist"):
+            (agents / name).write_text("x")
+        (self.state / "bin").mkdir(parents=True)
+        (self.state / "bin" / "retro-daily").write_text("x")
+        return agents
+
+    def test_install_turns_the_session_start_retro_on_and_removes_the_old_launchd_job(self):
+        agents = self.plant_old_job()
+        with self.fake_job_tools("darwin"):
+            self.assertEqual(self.schedule.main(["install"]), 0)
+        self.assertTrue((self.state / "retro-auto").is_file())
+        self.assertEqual([p.name for p in agents.iterdir()], ["other.plist"])
+        self.assertFalse((self.state / "bin" / "retro-daily").exists())
+        for label in ("dev.software-factory.retro", "dev.software-factory.retro.check"):
+            self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], self.calls)
+        self.assertFalse(any(c[:2] == ["launchctl", "bootstrap"] for c in self.calls))
+
+    def test_uninstall_turns_it_off(self):
+        with self.fake_job_tools("darwin"):
             self.schedule.main(["install"])
-            check_plist = (agents / "dev.software-factory.retro.check.plist").read_text()
-            self.assertIn("<string>--check</string>", check_plist)
-            self.assertIn("<key>Label</key><string>dev.software-factory.retro.check</string>", check_plist)
-            self.assertNotIn("--check", (agents / "dev.software-factory.retro.plist").read_text())
-            self.schedule.main(["uninstall", "--check"])
-        self.assertEqual(sorted(p.name for p in agents.iterdir()), ["dev.software-factory.retro.plist"])
-        self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/dev.software-factory.retro.check"], self.launchctl)
+            self.schedule.main(["uninstall"])
+        self.assertFalse((self.state / "retro-auto").exists())
 
-    def test_check_cron_line_has_the_flag_and_its_own_marker_and_uninstall_removes_only_it(self):
-        with self.fake_job_tools(), mock.patch.object(self.schedule.sys, "platform", "linux"):
-            self.schedule.main(["install", "--check"])
-            self.assertEqual(len(self.crontab), 2)
-            self.assertTrue(self.crontab[1].endswith("retro-daily' --check # software-factory-retro.check")
-                            or self.crontab[1].endswith("retro-daily --check # software-factory-retro.check"))
-            self.schedule.main(["uninstall", "--check"])
-        self.assertEqual(self.crontab, ["0 9 * * * x retro-daily # software-factory-retro"])
+    def test_old_cron_lines_go_and_other_lines_stay(self):
+        with self.fake_job_tools("linux"):
+            self.schedule.main(["install"])
+        self.assertEqual(self.crontab, ["5 * * * * backup.sh"])
+        self.calls.clear()
+        with self.fake_job_tools("linux"):
+            self.schedule.main(["uninstall"])
+        self.assertEqual(self.calls, [["crontab", "-l"]])  # nothing to remove, so the crontab is not rewritten
 
-    def test_plist_and_cron_line(self):
-        schedule = load("retro-schedule")
-        plist = schedule.plist("/s/bin/retro-daily", 9, "/usr/bin:/bin", "/s/retro.log")
-        for needle in (schedule.LABEL, "<integer>9</integer>", "/s/bin/retro-daily", "/usr/bin:/bin"):
-            self.assertIn(needle, plist)
-        line = schedule.cron_line("/s/bin/retro-daily", 7, "/usr/bin:/bin")
-        self.assertTrue(line.startswith("0 7 * * * "))
-        self.assertTrue(line.endswith(schedule.MARKER))
-
-    def test_paths_with_a_space_are_quoted_and_the_state_folder_reaches_the_job(self):
-        schedule = load("retro-schedule")
-        line = schedule.cron_line("/my state/bin/retro-daily", 9, "/usr/bin:/bin", "/my state")
-        self.assertIn("SOFTWARE_FACTORY_HOME='/my state' ", line)
-        self.assertIn("'/my state/bin/retro-daily'", line)
-        self.assertIn("SOFTWARE_FACTORY_HOME", schedule.plist("/my state/bin/retro-daily", 9, "/usr/bin", "/l", "/my state"))
-        self.assertNotIn("SOFTWARE_FACTORY_HOME", schedule.cron_line("/s/retro-daily", 9, "/usr/bin"))
-
-    def test_print_does_not_install(self):
-        with tempfile.TemporaryDirectory() as home:
-            env = dict(os.environ, HOME=home, SOFTWARE_FACTORY_HOME=str(Path(home) / "state"))
-            r = subprocess.run([sys.executable, str(ROOT / "scripts" / "retro-schedule"), "install", "--hour", "8", "--print"],
-                               capture_output=True, text=True, env=env)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("8", r.stdout)
-            self.assertEqual(list(Path(home).iterdir()), [])
+    def test_a_machine_without_crontab_still_installs(self):
+        with self.fake_job_tools("linux"), mock.patch.object(self.schedule.subprocess, "run", side_effect=OSError):
+            self.assertEqual(self.schedule.main(["install"]), 0)
+        self.assertTrue((self.state / "retro-auto").is_file())
 
 
 if __name__ == "__main__":

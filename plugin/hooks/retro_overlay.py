@@ -99,6 +99,11 @@ def main():
         if waiting or drafts:
             parts.append(f"Retro: {waiting} change(s) wait for the user's yes and {drafts} upstream draft(s) are "
                          f"ready. If you act as the Team Lead, tell the user once and offer /software-factory:retro review.")
+        if (overlay.state_dir() / "bin" / "retro-daily").is_file():  # the timed job of 0.9.0 to 0.10.2
+            schedule = shlex.quote(str(overlay.PLUGIN_ROOT / "scripts" / "retro-schedule"))
+            parts.append(f"Retro: the daily retro now starts at session start, and the old timed job is still "
+                         f"installed. If you act as the Team Lead, tell the user once and offer to run `python3 "
+                         f"{schedule} install` (it removes the old job; the user approves it).")
         failed = overlay.state_dir() / "retro-failed"
         if failed.is_file():
             reason = failed.read_text(errors="ignore").strip()[:FAILED_CAP]
