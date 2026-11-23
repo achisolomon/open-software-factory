@@ -2,10 +2,16 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
-## 0.10.1 (2026-11-20)
+## 0.10.2 (2026-11-23)
 
 - **The project has a website: [opensoftwarefactory.ai](https://opensoftwarefactory.ai/).** The plugin's `homepage` now points there and the README links to it. The plugin shows as "Open Software Factory"; the plugin and marketplace names (`software-factory@software-factory-marketplace`) are unchanged.
 - The old `docs/index.html` redirect page is removed. `docs/TRUST.md`, `docs/provenance.md` and `docs/improvement-backlog.md` stay.
+
+## 0.10.1 (2026-11-22)
+
+- **Fewer questions.** A week of traces showed 217 questions asked of the user, and 56% were answered with the recommended first option. The Team Lead now decides a reversible, inside-the-repo choice itself (naming, wording, equivalent implementations, layout, test data, ordering), says so in one line, and asks only at approval gates, for irreversible or outward-facing steps, when the user's words conflict, or when options differ in scope or cost.
+- **No approval prompts for scratch cleanup.** 31 of 32 ask-rule prompts in a week were `rm -r` on scratch folders and `git worktree remove --force` on mutation worktrees. A new `scripts/scratch-clean` deletes files, folders and throwaway worktrees, and refuses anything not strictly inside `$FACTORY_TMP` or `$TMPDIR` (symlink escapes and the root included). Agents use it instead of `rm -r`.
+- **Leaner default team.** Review roles used about 1.6 times the Developer's tokens in a week, and no project had set a roster. With no `- Team:` line, UX and DevOps now review once per epic instead of on every task, and FinOps is off. Security stays per epic. Hard security triggers still run Security on the task, every reviewer still runs at release, and a project can put any role back to `per-task` with a `- Team:` line.
 
 ## 0.10.0 (2026-11-14)
 

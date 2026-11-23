@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Delete scratch files, folders and throwaway git worktrees, only inside the session's scratch area.
+
+Usage:
+  scratch-clean [--worktree-of REPO] PATH...
+
+Each PATH is resolved (symlinks followed) and must lie strictly inside $FACTORY_TMP or $TMPDIR, also resolved.
+Anything else (the root itself, a path outside, a symlink that escapes, both variables unset) is refused with
+exit 2 and nothing at all is deleted. A registered git worktree is removed with `git worktree remove --force`
+and pruned (REPO is the main repository; without --worktree-of it is found from the worktree itself). Other
+paths are deleted. A missing path is reported and skipped. Stdlib only, Python 3.9+.
+"""
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+ROOT_VARS = ("FACTORY_TMP", "TMPDIR")
+
+
+def scratch_roots():
+    return [Path(os.environ[v]).resolve() for v in ROOT_VARS if os.environ.get(v)]
+
+
+def refusal(raw, roots):
+    """Why this path may not be deleted, or None."""
+    if not roots:
+        return "neither FACTORY_TMP nor TMPDIR is set"
+    path = Path(os.path.realpath(raw))
+    if any(root in path.parents for root in roots):
+        return None
+    return f"{raw} is not strictly inside {' or '.join(str(r) for r in roots)}"
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True)
+
+
+def common_git_dir(path):
+    """The shared git dir when path is a linked worktree, else None."""
+    if not (path / ".git").is_file():
+        return None
+    out = git("-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def remove(raw, repo):
+    path = Path(os.path.realpath(raw))
+    if not path.exists() and not os.path.lexists(raw):
+        print(f"scratch-clean: {raw} does not exist, skipped")
+        return
+    common = str(Path(repo).resolve() / ".git") if repo else common_git_dir(path)
+    if common and path.is_dir():
+        result = git(f"--git-dir={common}", "worktree", "remove", "--force", str(path))
+        git(f"--git-dir={common}", "worktree", "prune")
+        if result.returncode != 0 and path.exists():
+            print(f"scratch-clean: git could not remove {raw}: {result.stderr.strip()}", file=sys.stderr)
+            return
+    elif os.path.islink(raw) or path.is_file():
+        os.unlink(raw)
+    else:
+        shutil.rmtree(path)
+    print(f"scratch-clean: removed {raw}")
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="scratch-clean", description=__doc__.split("\n")[0])
+    parser.add_argument("--worktree-of", metavar="REPO")
+    parser.add_argument("paths", nargs="+")
+    args = parser.parse_args(argv)
+    roots = scratch_roots()
+    problems = [p for p in (refusal(raw, roots) for raw in args.paths) if p]
+    if problems:
+        for problem in problems:
+            print(f"scratch-clean: refused, {problem}", file=sys.stderr)
+        return 2
+    for raw in args.paths:
+        remove(raw, args.worktree_of)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -35,7 +35,8 @@ software-factory/
 │   ├── reference/
 │   │   └── handoff-contract.md
 │   ├── scripts/
-│   │   └── review-route
+│   │   ├── review-route
+│   │   └── scratch-clean
 │   └── skills/            factory-init, build, team-lead, review, resume, status, health, session-setup, frontend-testing
 ├── assets/          README and link-preview images
 ├── evals/           behavior evals

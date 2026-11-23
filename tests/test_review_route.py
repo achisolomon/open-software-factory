@@ -25,8 +25,19 @@ def required(out):
 
 
 class ReviewRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The trigger-rule tests pin every soft role to per-task, so they test the rules and not the default roster.
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.per_task = str(Path(cls.tmp.name) / "project-facts.md")
+        Path(cls.per_task).write_text("- Team: security=per-epic, ux=per-task, finops=per-task, devops=per-task\n")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
     def assert_routes(self, change, reviewers, depth="standard"):
-        out = route_json([change])
+        out = route_json([change], facts=self.per_task)
         self.assertEqual(required(out), {"architect", "test"} | set(reviewers), change)
         self.assertEqual(out["depth"], depth, change)
         self.assertEqual(out["action"], "route-only")
@@ -138,13 +149,24 @@ class ReviewRouteTests(unittest.TestCase):
             self.assertEqual(soft["reviewers"]["security"], "off")
             self.assertEqual(soft["reviewers"]["ux"], "epic-end")
             self.assertEqual(soft["reviewers"]["finops"], "off")
-            self.assertEqual(soft["reviewers"]["devops"], "required")  # unknown level keeps per-task
-            self.assertEqual(soft["roster"]["devops"], "per-task")
+            self.assertEqual(soft["reviewers"]["devops"], "epic-end")  # unknown level keeps the default
+            self.assertEqual(soft["roster"]["devops"], "per-epic")
             hard = route_json([{"path": "src/api.py", "removed": ["require_auth(request)"]}], facts=str(facts))
             self.assertEqual(hard["reviewers"]["security"], "required")
             facts.write_text("- Team: security=per-task\n")
             out = route_json([{"path": "src/client.ts", "added": ["fetch(url)"]}], facts=str(facts))
             self.assertEqual(out["reviewers"]["security"], "required")
+
+    def test_default_roster_is_lean(self):
+        out = route_json([{"path": "web/src/components/Card.tsx", "added": ["<div/>"]},
+                          {"path": "infra/main.tf", "added": ["x = 1"]}])
+        self.assertEqual(out["roster"], {"security": "per-epic", "ux": "per-epic", "finops": "off", "devops": "per-epic"})
+        self.assertEqual(required(out), {"architect", "test"})
+        self.assertEqual(out["reviewers"]["ux"], "epic-end")
+        self.assertEqual(out["reviewers"]["devops"], "epic-end")
+        self.assertEqual(out["reviewers"]["finops"], "off")
+        hard = route_json([{"path": "src/api.py", "removed": ["require_auth(request)"]}])
+        self.assertEqual(hard["reviewers"]["security"], "required")  # hard triggers ignore the default
 
     def test_unreadable_input_requires_every_reviewer(self):
         for raw in ("not json", "{}", json.dumps({"changes": [{"added": ["x"]}]}),
@@ -182,7 +204,8 @@ class ReviewRouteGitTests(unittest.TestCase):
         (self.repo / "src" / "components").mkdir()
         (self.repo / "src" / "components" / "Card.tsx").write_text("export const Card = () => null\n")
         out = self.route()
-        self.assertEqual(required(out), {"architect", "test", "security", "ux"})
+        self.assertEqual(required(out), {"architect", "test", "security"})
+        self.assertEqual(out["reviewers"]["ux"], "epic-end")  # default roster runs UX at epic end
         self.assertIn("security: src/api.py", out["reasons"])
         self.assertIn("ux: src/components/Card.tsx", out["reasons"])
         self.assertEqual(out["depth"], "standard")
