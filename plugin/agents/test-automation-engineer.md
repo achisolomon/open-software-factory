@@ -100,7 +100,7 @@ Also review the stories: flag any acceptance criterion that is not testable as w
    1. Create a disposable worktree: `mkdir -p "$FACTORY_TMP"`, then `git worktree add "$FACTORY_TMP/mut-T-NNN" HEAD`. Never mutate the shared tree.
    2. Apply a one-line mutation to the code under test there (flip a condition, change a constant, drop a guard).
    3. Run the tests and confirm at least one new test fails.
-   4. Remove the worktree (`git worktree remove --force "$FACTORY_TMP/mut-T-NNN"`) and confirm `git status` in the shared tree is unchanged.
+   4. Remove the worktree (`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scratch-clean "$FACTORY_TMP/mut-T-NNN"`) and confirm `git status` in the shared tree is unchanged.
    A mutation that no test catches is a finding: Major when the test covers a Must criterion, otherwise Minor. Record each mutation and its outcome in the report.
 7. Commit your test code on the same task branch: `T-NNN: tests for <what>`.
 8. Write `docs/testing/reports/T-NNN.md`:
@@ -172,7 +172,7 @@ A quarantined test is a flaky test or a confirmed-defect test, each with an open
 - Never modify application code to make tests pass; report the defect to the Developer.
 - Never accept "it works, I checked by hand" from anyone, including yourself. If it cannot be tested by automation, it is a Major finding for the Architect and the Developer, and it stays open until it can.
 - **Change files with the Edit and Write tools**, not shell heredocs, `sed -i`, `perl -i` or Python write scripts (contract rule 9.12).
-- **Delete only files you created in this run, by exact path.** No recursive force delete (`rm -rf`) except a temp directory you created under `$FACTORY_TMP` or `$TMPDIR` (such as a mutation worktree). To delete anything else, return `Status: needs-input`. Scratch files, `git archive` exports, fake `HOME` folders and verification copies go in `$FACTORY_TMP`, the session's scratch folder inside the project (never outside the project folder), and are removed before you reply (contract rule 9.12). Follow the user's and project's CLAUDE.md and AGENTS.md rules.
+- **Delete only files you created in this run, by exact path.** Never `rm -rf`, `rm -r` or `git worktree remove --force`; clean scratch you created (a mutation worktree, exports, copies) with `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scratch-clean <path>`, which refuses anything outside `$FACTORY_TMP` and `$TMPDIR`. To delete anything else, return `Status: needs-input`. Scratch files, `git archive` exports, fake `HOME` folders and verification copies go in `$FACTORY_TMP`, the session's scratch folder inside the project (never outside the project folder), and are removed before you reply (contract rule 9.12). Follow the user's and project's CLAUDE.md and AGENTS.md rules.
 - **Zero errors in logs** (contract rule 9.13): never lower log levels, mute or filter output, swallow errors or skip a noisy test to get a clean run. File a finding instead.
 - Tests must be deterministic: no sleeps (use waits on conditions), no order dependence, no shared mutable state, fixed seeds and clocks where relevant.
 - No real personal data, production credentials or production endpoints in tests.

@@ -33,7 +33,7 @@ import sys
 OPTIONAL = ("security", "ux", "finops", "devops")
 ROSTER_LEVELS = ("per-task", "per-epic", "off")
 # Security per epic by default: only its hard triggers interrupt a task. The others review each task they touch.
-DEFAULT_ROSTER = {"security": "per-epic", "ux": "per-task", "finops": "per-task", "devops": "per-task"}
+DEFAULT_ROSTER = {"security": "per-epic", "ux": "per-epic", "finops": "off", "devops": "per-epic"}
 MAX_UNTRACKED_BYTES = 1_000_000
 
 # In a path, or on a removed line (a deleted guard), these words are a hard security trigger.
