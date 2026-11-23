@@ -8,7 +8,7 @@
 
 An open-source AI software team for Claude Code: specialist agents (Architect, Developer, Tester, PM, Security, UX and more) that take your spec to a tested, reviewed release. The team keeps growing.
 
-**[Use it](#quick-start). [Improve it](#contribute). [Star it](https://github.com/achisolomon/open-software-factory).**
+**[Use it](#quick-start). [Improve it](#contribute). [Star it](https://github.com/achisolomon/open-software-factory).** Or see the [website](https://opensoftwarefactory.ai/).
 
 ## See it work
 
@@ -89,7 +89,7 @@ Every improvement you make for your own projects can make the factory better for
 
 Read-only lookups run on Haiku. To change the policy, see [Tips](#tips).
 
-Current version: 0.10.2. What changed in each release, newest first: [release notes](CHANGELOG.md).
+Current version: 0.10.3. What changed in each release, newest first: [release notes](CHANGELOG.md).
 
 ## Tips
 

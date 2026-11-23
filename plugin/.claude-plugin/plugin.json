@@ -1,12 +1,12 @@
 {
   "name": "software-factory",
-  "displayName": "Software Factory",
-  "version": "0.10.2",
+  "displayName": "Open Software Factory",
+  "version": "0.10.3",
   "description": "A team of AI agents that builds software end to end: Team Lead, Triage Classifier, Product Manager, Project Manager, Software Architect, Developer, Test Automation, Exploratory QA, DevOps, FinOps, Security, UX/UI Designer and Performance Engineer, with a shared handoff contract and approval gates.",
   "author": {
     "name": "Achi Solomon"
   },
-  "homepage": "https://achisolomon.github.io/open-software-factory/",
+  "homepage": "https://opensoftwarefactory.ai/",
   "repository": "https://github.com/achisolomon/open-software-factory",
   "license": "AGPL-3.0-only",
   "keywords": ["agents", "software-architecture", "code-review", "devops", "finops", "security", "testing", "product-management"]
