@@ -276,7 +276,7 @@ ul.roster { list-style: none; margin: 0; padding: 0; display: grid; gap: 20px; }
 .steps p { color: var(--ink-dim); max-width: 66ch; }
 
 .proof { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 40px; align-items: center; }
-.movie { aspect-ratio: 16 / 9; max-width: 100%; background: linear-gradient(135deg, var(--bg-2), var(--blue-deep)); border: 1px solid var(--rule); border-radius: 4px; display: grid; place-items: center; text-align: center; padding: 16px; color: var(--ink); text-decoration: none; }
+.movie { aspect-ratio: 1920 / 1024; max-width: 100%; background: linear-gradient(135deg, var(--bg-2), var(--blue-deep)); border: 1px solid var(--rule); border-radius: 4px; display: grid; place-items: center; text-align: center; padding: 16px; color: var(--ink); text-decoration: none; }
 .movie .play { width: 72px; height: 72px; border-radius: 50%; border: 2px solid var(--ink); display: grid; place-items: center; margin: 0 auto 14px; }
 .movie .play::after { content: ""; border-left: 22px solid var(--ink); border-block: 14px solid transparent; margin-left: 6px; }
 .movie-body { display: grid; justify-items: center; }
@@ -286,6 +286,19 @@ ul.roster { list-style: none; margin: 0; padding: 0; display: grid; gap: 20px; }
 .movie:hover, .movie:focus-visible { border-color: var(--blue-soft); }
 .movie:hover .play, .movie:focus-visible .play { border-color: var(--blue-soft); }
 .movie:hover .ext, .movie:focus-visible .ext { fill: var(--blue-soft); }
+.movie[data-inline] .ext { display: none; }
+.movie-col { min-width: 0; }
+.movie-caption { margin: 12px 0 0; color: var(--ink-dim); font-size: 14px; max-width: 66ch; }
+.movie-player { padding: 0; background: #000; overflow: hidden; }
+/* The video sits over the box's own border, so the ring is drawn inside it (UX focus visible). */
+.movie-player:focus-within { border-color: var(--blue-soft); outline: 2px solid var(--blue-soft); outline-offset: -3px; }
+.movie-player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+/* At 1920:1024 the link content must fit the slot on a 320 px phone, or the swap to the video would shift the layout. */
+@media (max-width: 400px) {
+  .movie { padding: 8px; }
+  .movie .play { width: 48px; height: 48px; margin-bottom: 8px; }
+  .movie b { font-size: 16px; }
+}
 .stats { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
 /* Three stats: one column beside the movie, three across once the proof stacks, one again on phones (no empty cell, UX F-7). */
 @media (min-width: 601px) and (max-width: 900px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

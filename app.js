@@ -575,12 +575,69 @@
     return true;
   };
 
+  // Proof: with scripts on, the run link plays the movie in its own slot; if the file fails, the link comes back.
+  const proof = (section) => {
+    const link = section.querySelector("a.movie");
+    if (!link) return false;
+    // With scripts the slot plays here; after a failed video it is a plain link to GitHub again.
+    const setPlaysHere = (playsHere) => {
+      link.setAttribute("aria-label", playsHere ? "Watch the team work, plays here" : "Watch the team work, opens on GitHub");
+      if (playsHere) link.setAttribute("role", "button");
+      else link.removeAttribute("role");
+      link.toggleAttribute("data-inline", playsHere);
+    };
+    const SETTLE_MS = 600; // a second click right after the swap lands on the video and would pause it
+    setPlaysHere(true);
+    const inline = new AbortController(); // after a failed video the handlers go, so the link is a plain link to GitHub
+    link.addEventListener("keydown", (event) => {
+      if (event.key === " ") event.preventDefault(); // no page scroll; the keyup below activates, as a button does
+    }, { signal: inline.signal });
+    link.addEventListener("keyup", (event) => {
+      if (event.key === " ") link.click();
+    }, { signal: inline.signal });
+    link.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; // let the browser open GitHub
+      event.preventDefault();
+      const slot = document.createElement("div");
+      slot.className = "movie movie-player";
+      const video = document.createElement("video");
+      video.src = "art/run.mp4";
+      video.controls = true;
+      video.muted = true; // the file has no audio; muted keeps autoplay after the click from being blocked
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute("aria-label", "Watch the team work: a real run");
+      video.setAttribute("aria-describedby", "movie-caption");
+      const swappedAt = performance.now();
+      // Chrome toggles play in the click's default action, so stopping propagation is not enough: cancel it too.
+      for (const type of ["click", "dblclick"]) {
+        slot.addEventListener(type, (e) => {
+          if (performance.now() - swappedAt >= SETTLE_MS) return;
+          e.preventDefault();
+          e.stopPropagation();
+        }, true);
+      }
+      video.addEventListener("error", () => {
+        const refocus = document.activeElement === video || document.activeElement === document.body;
+        inline.abort();
+        setPlaysHere(false);
+        slot.replaceWith(link);
+        if (refocus) link.focus();
+      });
+      slot.append(video);
+      link.replaceWith(slot);
+      video.focus();
+    }, { signal: inline.signal });
+    return true;
+  };
+
   const sections = [
     ["hero", "#hero", hero],
     ["doors", ".doors", doors],
     ["journey", "#how", journey],
     ["triage", "#triage", triage],
     ["roster", "#team", roster],
+    ["proof", "#proof", proof],
   ];
 
   for (const [name, selector, init] of sections) {
