@@ -232,6 +232,22 @@ class RetroDailyTests(unittest.TestCase):
         with mock.patch.object(self.daily.subprocess, "run", return_value=scan):
             self.assertEqual(self.daily.scan_due(Path("/opt/plugin")), ([{"project": "/w/alpha"}], None))
 
+    def test_a_scan_blocked_by_macos_privacy_names_the_python_that_needs_full_disk_access(self):
+        skip = "retro-scan: skipped /w/alpha: fatal: Unable to read current working directory: Operation not permitted"
+        scan = subprocess.CompletedProcess([], 0, "[]", skip)
+        with mock.patch.object(self.daily.subprocess, "run", return_value=scan):
+            self.assertEqual(self.daily.main(), 1)
+        self.assertEqual((self.state / "retro-failed").read_text(), f"needs-full-disk-access {sys.executable}\n")
+        log = (self.state / "retro.log").read_text().splitlines()
+        self.assertEqual((log[0][:3], log[1:]), ("===", [skip]))
+
+    def test_a_run_with_nothing_due_still_logs_and_clears_an_old_failure(self):
+        self.state.mkdir(parents=True)
+        (self.state / "retro-failed").write_text("needs-full-disk-access /x/python3\n")
+        self.assertEqual(self.run_main([], [])[0], 0)
+        self.assertFalse((self.state / "retro-failed").exists())
+        self.assertEqual([l[:3] for l in (self.state / "retro.log").read_text().splitlines()], ["===", "SEC"])
+
     def plant(self, cache, marketplace, versions):
         for v in versions:
             (cache / marketplace / "software-factory" / v / "agents").mkdir(parents=True)

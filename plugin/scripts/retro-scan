@@ -8,7 +8,10 @@ Usage:
                                metrics for one project since its last retro (default: the last 7 days)
 
 A factory project is a folder holding docs/factory/status.md. Sessions in its worktrees (.claude/worktrees/*,
-.worktrees/*, or a live worktree anywhere) count for the parent repo. Other sessions are never read.
+.worktrees/*, or a live worktree anywhere) count for the parent repo. A session started in a folder up to 3 levels
+above factory projects (never the home folder or above it) counts for the project that holds more than half of its
+tool calls; its tool-call lines are read only to find that project. Of every other session only the first lines are
+read, to learn its folder.
 
 Env: CLAUDE_PROJECTS_DIR (default ~/.claude/projects), SOFTWARE_FACTORY_HOME (default ~/.software-factory),
 CLAUDE_USER_SETTINGS (default ~/.claude/settings.json, read for ask rules). Stdlib only, Python 3.9+.
@@ -17,7 +20,9 @@ CLAUDE_USER_SETTINGS (default ~/.claude/settings.json, read for ask rules). Stdl
 import argparse
 import collections
 import datetime
+import errno
 import fnmatch
+import functools
 import json
 import os
 from pathlib import Path
@@ -38,6 +43,12 @@ TOP = 15
 SAMPLES = {"correction": 20, "preference": 12, "praise": 8}
 COUNTERS = ("errors", "errors_by_tool", "hook_blocks", "sandbox_off", "ask_hits", "approvals", "gh_writes")
 WORKTREE = re.compile(r"/(?:\.claude/worktrees|\.worktrees)/[^/]+")
+BELOW_DEPTH = 3  # how many folders below a session's start folder are searched for factory projects
+MIN_VOTES = 3  # tool calls a parent-folder session needs in one project to count for it
+CWD_FIELD = re.compile(r'"cwd":\s*"((?:[^"\\]|\\.)*)"')
+# the rest of a path after its folder, up to a quote, escape or shell punctuation; a space only inside a name
+PATH_TAIL = r"""/(?:[^"\\\s;:,()\[\]'|&<>`]| (?![\s/&|<>-]))*"""
+NOWHERE = object()  # a vote for no one: a path that cannot be placed
 GH_WRITE = re.compile(
     r"\b(gh\s+(pr\s+(create|merge|edit|close|comment|review|ready)|issue\s+(create|edit|close|comment|reopen)|"
     r"project\s+(item-add|item-edit|item-create|create|field-create|link)|release\s+create|label\s+create|"
@@ -47,6 +58,7 @@ QUOTED = re.compile(r'"[^"]*"|\'[^\']*\'')
 LIST_LIMIT = 50
 REMOTE_TIMEOUT = 20
 SKIPPED = set()  # transcript files that could not be read this run, reported so a bad file is visible
+BLOCKED = set()  # folders macOS privacy hid this run (EPERM), reported so the daily launcher can say why
 CORRECTION = re.compile(r"\b(no|don't|dont|do not|stop|why did|why are|wrong|instead|again|not what|you forgot|"
                         r"never|shouldn't|should not|too slow|too long|waste)\b", re.I)
 PREFERENCE = re.compile(r"\b(i prefer|i want|i'd rather|from now on|always|please use|let's use)\b", re.I)
@@ -102,24 +114,156 @@ def session_cwd(path):
     return None
 
 
+def is_factory(folder):
+    return os.path.isfile(folder / "docs" / "factory" / "status.md")  # os.path: never raises, also for EACCES
+
+
+def main_checkout(folder):
+    """The main checkout a linked worktree folder belongs to, or None when the folder is not a linked worktree."""
+    git_file = folder / ".git"
+    if not os.path.isfile(git_file):
+        return None
+    try:
+        m = re.match(r"gitdir:\s*(.+)/\.git/worktrees/", git_file.read_text(errors="ignore"))
+    except OSError:
+        return None
+    return Path(os.path.normpath(folder / m.group(1))) if m else None  # a relative gitdir is relative to the folder
+
+
+def worktree_top(cwd):
+    """The linked worktree folder cwd is in, or None."""
+    start = Path(cwd)
+    return next((str(f) for f in (start, *start.parents) if main_checkout(f)), None)
+
+
+@functools.lru_cache(maxsize=None)
 def project_root(cwd):
-    """The factory project a session's cwd belongs to, or None. Worktree sessions map to the parent repo."""
+    """The factory project a session's cwd belongs to, or None. Worktree sessions map to the parent repo, also a live
+    worktree that holds its own tracked docs/factory/status.md."""
     if not cwd:
         return None
     start = Path(WORKTREE.split(cwd, 1)[0])
-    for folder in (start, *start.parents):
-        if (folder / "docs" / "factory" / "status.md").is_file():
-            return str(folder)
     # shortcut: a removed worktree outside .claude/worktrees or .worktrees is not mapped; add a pattern if one shows up
-    git_file = Path(cwd) / ".git"
-    if git_file.is_file():
-        try:
-            m = re.match(r"gitdir:\s*(.+)/\.git/worktrees/", git_file.read_text(errors="ignore"))
-        except OSError:
-            return None
-        if m and (Path(m.group(1)) / "docs" / "factory" / "status.md").is_file():
-            return m.group(1)
+    for folder in (start, *start.parents):
+        main = main_checkout(folder)
+        if main and is_factory(main):
+            return str(main)
+        if is_factory(folder):
+            return str(folder)
     return None
+
+
+@functools.lru_cache(maxsize=None)
+def factory_below(cwd):
+    """Main checkouts of factory projects up to BELOW_DEPTH folders under cwd. Hidden folders, node_modules and linked
+    worktrees are skipped, and so is the home folder and anything above it (too wide, and it holds private folders)."""
+    top, home = Path(cwd), Path.home()
+    if top == home or top in home.parents:
+        return ()
+    found, level = [], [top]
+    for _ in range(BELOW_DEPTH):
+        deeper = []
+        for folder in level:
+            try:
+                entries = sorted(os.scandir(folder), key=lambda e: e.name)
+            except OSError as e:
+                if e.errno == errno.EPERM:
+                    BLOCKED.add(str(folder))
+                continue
+            for entry in entries:
+                try:
+                    if entry.name.startswith(".") or entry.name == "node_modules" or not entry.is_dir(
+                            follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                path = Path(entry.path)
+                if os.path.isfile(path / ".git"):  # a linked worktree counts for its main checkout, found on its own
+                    continue
+                if is_factory(path):  # a project's own folders are not searched for more projects
+                    found.append(str(path))
+                else:
+                    deeper.append(path)
+        level = deeper
+    return tuple(found)
+
+
+def json_path(p):
+    """A path as it is written inside a JSON string."""
+    return re.escape(json.dumps(p, ensure_ascii=False)[1:-1])
+
+
+@functools.lru_cache(maxsize=None)
+def placed(text):
+    """The path a tool call names, or None. The match may run on past a space ("ls /w/x foo"), so the longest cut at a
+    space that is on disk wins, then the longest whose folder is (a new file)."""
+    cuts = [text[:i] for i in range(len(text), 0, -1) if i == len(text) or text[i] == " "]
+    p = next((c for c in cuts if os.path.exists(c)), None) or next(
+        (c for c in cuts if os.path.isdir(os.path.dirname(c))), None)
+    return os.path.normpath(p) if p else None
+
+
+@functools.lru_cache(maxsize=None)
+def in_checkout(path, cwd):
+    """True when a path under cwd, or the folder a new file goes into, is on disk inside a git checkout at or below cwd.
+    Work in a deleted folder, or in a folder a removed worktree left behind without its .git, cannot be placed, so it
+    votes for no one."""
+    folder = path if os.path.isdir(path) else os.path.dirname(path)
+    if not os.path.isdir(folder):
+        return False
+    while folder == cwd or folder.startswith(cwd + os.sep):
+        if os.path.exists(os.path.join(folder, ".git")):
+            return True
+        folder = os.path.dirname(folder)
+    return False
+
+
+def parent_project(path, cwd):
+    """For a session started in a folder above factory projects: the project that holds most of its work, or None.
+
+    Only tool calls vote, so a path that shows up in a tool's output or a pasted message does not. A call votes for a
+    project when it runs inside it or names a path inside it, and votes "elsewhere" when it runs in or names another
+    folder under cwd that is on disk inside a git checkout. The winner needs MIN_VOTES calls and more than half of all votes, so a stray
+    mention, an even split between two projects, or a session that mostly worked in a folder that is no factory project
+    is not counted."""
+    # shortcut: the whole session counts for the winner, also its calls about a sibling; split by line if that matters
+    candidates = factory_below(cwd)
+    if not candidates:
+        return None
+    named = re.compile(r"(?<![\w.-])" + json_path(cwd) + PATH_TAIL)
+
+    def target(p):  # the project a path under cwd is in, None for another checkout, NOWHERE when it cannot be placed
+        if not p or not p.startswith(cwd + os.sep):
+            return NOWHERE
+        mapped = project_root(p)  # also maps a linked worktree beside its project to that project
+        if mapped in candidates:
+            return mapped
+        return None if in_checkout(p, cwd) else NOWHERE
+
+    votes = collections.Counter()
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if '"tool_use"' not in line:  # cheap filter: only assistant lines with a tool call vote
+                    continue
+                targets = {target(placed(decoded(m.group(0)) or "")) for m in named.finditer(line)}
+                here = decoded(m.group(1)) if (m := CWD_FIELD.search(line)) else None
+                targets.add(target(here))
+                targets.discard(NOWHERE)
+                votes.update(targets)
+    except OSError:
+        SKIPPED.add(str(path))
+        return None
+    best = max(candidates, key=lambda p: votes[p])
+    return best if votes[best] >= MIN_VOTES and votes[best] * 2 > sum(votes.values()) else None
+
+
+def decoded(text):
+    """A JSON string body as plain text, or None when it is not valid JSON."""
+    try:
+        return json.loads(f'"{text}"')
+    except ValueError:
+        return None
 
 
 def mtime(path):
@@ -136,7 +280,7 @@ def main_sessions(newer_than):
         if modified is None or modified < newer_than:
             continue
         cwd = session_cwd(path)
-        root = project_root(cwd)
+        root = project_root(cwd) or (cwd and parent_project(path, cwd))
         if root:
             yield path, cwd, root, modified
 
@@ -166,8 +310,10 @@ def discover(sessions=None):
         p = found.setdefault(root, {"project": root, "sessions": 0, "worktrees": set(), "last_active": 0.0})
         p["sessions"] += 1
         p["last_active"] = max(p["last_active"], modified)
+        if root.startswith(cwd + os.sep):  # a session started in a parent folder is not a worktree
+            continue
         if cwd != root and not cwd.startswith(root + os.sep):
-            p["worktrees"].add(cwd)
+            p["worktrees"].add(worktree_top(cwd) or cwd)
         elif WORKTREE.search(cwd):
             p["worktrees"].add(WORKTREE.split(cwd, 1)[0] + WORKTREE.search(cwd).group(0))
     return [dict(p, worktrees=sorted(p["worktrees"]), last_active=iso(p["last_active"]))
@@ -473,6 +619,8 @@ def main(argv=None):
         result = measure(root, since, branch=a.branch, with_github=not a.no_github)
     if SKIPPED and not a.project:
         print(f"retro-scan: skipped {len(SKIPPED)} unreadable transcript file(s)", file=sys.stderr)
+    if BLOCKED:
+        print(f"retro-scan: cannot read {len(BLOCKED)} folder(s): {os.strerror(errno.EPERM)}", file=sys.stderr)
     if a.due_out:  # the in-session retro cannot write this file itself (#198); same format as retro-daily
         Path(a.due_out).mkdir(parents=True, exist_ok=True)
         (Path(a.due_out) / overlay.DUE_FILE).write_text(json.dumps([root]) + "\n", encoding="utf-8")

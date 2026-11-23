@@ -2,6 +2,13 @@
 
 What changed in each release of the Software Factory plugin, newest first. Back to the [README](README.md). To update, see [Updating](README.md#updating).
 
+## 0.10.2 (2026-11-23)
+
+- **Retros see sessions started in a parent folder.** A session opened in a folder that holds several projects (for example `~/code/acme` with `acme/web` inside) scanned as 0 sessions, because the scan only walked up from the session's folder. It now also looks up to 3 folders down for factory projects and counts the session for the one that holds more than half of its tool calls (at least 3): the folders a call ran in and the paths it named. A path that only shows up in a tool's output or a pasted message does not vote. Work in another git repo below the folder counts against every project; work in a deleted folder, or in a leftover folder with no git checkout (a removed worktree), votes for no one. The home folder and anything above it are never searched.
+- **A worktree outside `.claude/worktrees` counts for its main checkout.** A live worktree kept next to the repo (for example `acme/worktrees/fix-1`) that carries its own tracked `docs/factory/status.md` was counted as a separate project. The scan now follows its `.git` file to the main checkout.
+- **The daily retro logs every run and names a missing macOS permission.** A run with nothing due left no line in `retro.log`, so a run that never started looked the same as one with nothing to do. Every run now logs, with the scan's skip lines. When macOS privacy blocks the scan (no Full Disk Access for the Python that launchd runs), `retro-failed` says `needs-full-disk-access` and names that Python, and the next session start shows it.
+- The README's Team tip now gives the 0.10.1 default (Security, UX and DevOps once per epic, FinOps off).
+
 ## 0.10.1 (2026-11-22)
 
 - **Fewer questions.** A week of traces showed 217 questions asked of the user, and 56% were answered with the recommended first option. The Team Lead now decides a reversible, inside-the-repo choice itself (naming, wording, equivalent implementations, layout, test data, ordering), says so in one line, and asks only at approval gates, for irreversible or outward-facing steps, when the user's words conflict, or when options differ in scope or cost.

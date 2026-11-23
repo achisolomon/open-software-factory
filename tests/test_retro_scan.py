@@ -2,6 +2,7 @@
 
 import ast
 import datetime
+import errno
 import importlib.machinery
 import importlib.util
 import json
@@ -98,6 +99,139 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual([p["project"] for p in found], [repo])
         self.assertEqual(found[0]["sessions"], 2)
         self.assertEqual(found[0]["worktrees"], [worktree])
+
+    def factory(self, *parts):
+        folder = self.f.base.joinpath(*parts)
+        (folder / "docs" / "factory").mkdir(parents=True)
+        (folder / "docs" / "factory" / "status.md").write_text("# Status\n")
+        return str(folder)
+
+    def edit(self, call_id, file_path, t, cwd):
+        return {"type": "assistant", "timestamp": iso(t), "cwd": cwd, "message": {"content": [
+            {"type": "tool_use", "id": call_id, "name": "Edit", "input": {"file_path": file_path}}]}}
+
+    def test_a_parent_folder_session_counts_for_the_project_it_worked_in_most(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        other = self.factory("work", "group", "other")
+        rows = [user("start", NOW - 90, work), self.edit("e1", repo + "/README.md", NOW - 80, work),
+                self.edit("e2", other + "/a.py", NOW - 70, work), self.edit("e3", other + "/b.py", NOW - 60, work),
+                bash("b1", f'git -C "{other}" status', NOW - 50, work),
+                user("next", NOW - 40, other + "/.claude/worktrees/x")]
+        self.f.session(work, rows)
+        self.f.session(work, [user("hi", NOW - 30, work)] + [self.edit(f"e{k}", f"{repo}/f{k}.py", NOW - 20 + k, work)
+                                                             for k in range(3)])
+        self.f.session(work, [user("only talk", NOW - 30, work)])
+        found = {p["project"]: p for p in self.f.run("--discover")}
+        self.assertEqual(sorted(found), sorted([other, repo]))
+        self.assertEqual((found[other]["sessions"], found[repo]["sessions"]), (1, 1))
+        self.assertEqual(found[other]["worktrees"], [])
+        measured = self.f.run("--project", other, "--since", iso(NOW - 3600), "--no-github")
+        self.assertEqual(measured["sessions"], 1)
+
+    def test_a_longer_folder_name_or_a_deep_or_hidden_project_is_not_matched(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        self.factory("work", "a", "b", "c", "deep")
+        self.factory("work", ".hidden", "proj")
+        self.f.session(work, [user("go", NOW - 60, work), self.edit("e1", repo + "-old/x.py", NOW - 50, work),
+                              self.edit("e2", work + "/a/b/c/deep/x.py", NOW - 40, work),
+                              self.edit("e3", work + "/.hidden/proj/x.py", NOW - 30, work)])
+        self.assertEqual(self.f.run("--discover"), [])
+
+    def test_a_session_in_the_home_folder_is_never_mapped_to_a_project_below_it(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        self.f.session(work, [user("go", NOW - 60, work), self.edit("e1", repo + "/x.py", NOW - 50, work)])
+        self.assertEqual(self.f.run("--discover", HOME=work), [])
+
+    def test_a_live_sibling_worktree_with_its_own_status_file_counts_for_its_main_checkout(self):
+        repo = str(self.f.repo)
+        sibling = self.factory("work", "worktrees", "fix-1")
+        relative = self.factory("work", "worktrees", "fix-2")
+        Path(sibling, ".git").write_text(f"gitdir: {repo}/.git/worktrees/fix-1\n")
+        Path(relative, ".git").write_text("gitdir: ../../app/.git/worktrees/fix-2\n")  # git 2.48 relative paths
+        for cwd in (sibling + "/src", sibling + "/docs", relative):
+            self.f.session(cwd, [user("go", NOW - 60, cwd)])
+        found = self.f.run("--discover")
+        self.assertEqual([(p["project"], p["sessions"], p["worktrees"]) for p in found],
+                         [(repo, 3, [sibling, relative])])
+
+    def test_a_stray_mention_or_tool_output_does_not_pull_a_session_into_a_project(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        notes = work + "/notes"
+        (self.f.base / "work" / "notes" / ".git").mkdir()  # a real repo, so work there votes elsewhere
+        self.f.session(work, [user("go", NOW - 90, work), self.edit("e1", notes + "/a.md", NOW - 80, work),
+                              self.edit("e2", notes + "/b.md", NOW - 70, work), bash("b1", f"ls {repo}", NOW - 60, work),
+                              bash("b2", "ls", NOW - 50, notes), result("b2", f"see {repo}/x {repo}/y", NOW - 49, notes)])
+        self.f.session(work, [user(f"look at {repo}/README.md", NOW - 40, work), bash("b3", "ls", NOW - 30, work),
+                              result("b3", f"{repo}/README.md", NOW - 29, work, error=False)])
+        self.assertEqual(self.f.run("--discover"), [])
+
+    def test_an_even_split_between_two_projects_counts_for_neither(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        other = self.factory("work", "other")
+        rows = [user("go", NOW - 60, work)]
+        rows += [self.edit(f"e{k}", f"{(repo, other)[k % 2]}/f{k}", NOW - 50 + k, work) for k in range(6)]
+        self.f.session(work, rows)
+        self.assertEqual(self.f.run("--discover"), [])
+
+    def test_work_in_a_deleted_folder_votes_for_no_one_and_one_or_two_calls_are_not_enough(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        gone = work + "/worktrees/removed-fix"  # a sibling worktree deleted since; its repo cannot be told
+        left = self.f.base / "work" / "worktrees" / "left-behind" / "node_modules"  # removed worktree, no .git left
+        left.mkdir(parents=True)
+        rows = [user("go", NOW - 90, work)] + [bash(f"g{k}", "npm test", NOW - 80 + k, gone) for k in range(10)]
+        rows += [bash(f"l{k}", f"ls {left}", NOW - 70 + k, str(left.parent)) for k in range(10)]
+        self.f.session(work, rows + [self.edit(f"e{k}", f"{repo}/f{k}", NOW - 50 + k, work) for k in range(3)])
+        self.f.session(work, rows + [self.edit(f"e{k}", f"{repo}/f{k}", NOW - 50 + k, work) for k in range(2)])
+        self.assertEqual([(p["project"], p["sessions"]) for p in self.f.run("--discover")], [(repo, 1)])
+
+    def test_a_path_ended_by_shell_punctuation_still_counts(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        self.f.session(work, [user("go", NOW - 60, work), bash("b1", f"cd {repo}; npm test", NOW - 50, work),
+                              bash("b2", f"(cd {repo}) && ls", NOW - 40, work),
+                              bash("b3", f"echo {repo}:{repo},", NOW - 30, work)])
+        self.assertEqual([p["project"] for p in self.f.run("--discover")], [repo])
+
+    def test_work_in_another_repo_with_a_space_in_its_name_counts_against_the_project(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        other = self.f.base / "work" / "my repo"
+        (other / ".git").mkdir(parents=True)
+        (other / "src").mkdir()
+        rows = [user("go", NOW - 90, work)] + [self.edit(f"e{k}", f"{repo}/f{k}", NOW - 80 + k, work) for k in range(3)]
+        rows += [self.edit(f"o{k}", f"{other}/src/x{k}.py", NOW - 60 + k, work) for k in range(5)]
+        rows += [bash("b1", f"ls {other}/src && ls -la", NOW - 40, work)]
+        self.f.session(work, rows)
+        self.assertEqual(self.f.run("--discover"), [])
+
+    def test_a_linked_worktree_beside_its_project_counts_for_that_project(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        beside = self.f.base / "work" / "app-feature"
+        beside.mkdir()
+        (beside / ".git").write_text(f"gitdir: {repo}/.git/worktrees/app-feature\n")
+        self.f.session(work, [user("go", NOW - 60, work)] + [
+            self.edit(f"e{k}", f"{beside}/f{k}.py", NOW - 50 + k, str(beside)) for k in range(3)])
+        self.assertEqual([(p["project"], p["sessions"]) for p in self.f.run("--discover")], [(repo, 1)])
+
+    def test_a_folder_macos_privacy_hides_is_reported_with_the_eperm_text(self):
+        loader = importlib.machinery.SourceFileLoader("retro_scan_eperm", str(SCRIPT))
+        rs = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(rs)
+        hidden = str(self.f.base / "work")
+        with mock.patch.object(rs.os, "scandir", side_effect=PermissionError(errno.EPERM, os.strerror(errno.EPERM))):
+            self.assertEqual(rs.factory_below(hidden), ())
+        self.assertEqual(rs.BLOCKED, {hidden})
+
+    def test_an_unreadable_folder_below_the_session_folder_does_not_stop_the_scan(self):
+        work, repo = str(self.f.base / "work"), str(self.f.repo)
+        locked = self.f.base / "work" / "locked" / "inner"
+        locked.mkdir(parents=True)
+        self.f.session(work, [user("go", NOW - 60, work)] + [self.edit(f"e{k}", f"{repo}/f{k}", NOW - 50 + k, work)
+                                                             for k in range(3)])
+        locked.parent.chmod(0)
+        try:
+            found = self.f.run("--discover")
+        finally:
+            locked.parent.chmod(0o755)
+        self.assertEqual([p["project"] for p in found], [repo])
 
     def test_only_sessions_from_the_last_30_days_count_and_last_active_is_the_newest(self):
         repo, newest = str(self.f.repo), int(NOW) - 1000

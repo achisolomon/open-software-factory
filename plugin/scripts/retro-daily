@@ -30,6 +30,7 @@ SECRET_PROJECT_GLOBS = ("**/.env*", "**/*.pem", "**/*.key", "**/*.tfstate*", "**
 MARKETPLACE = "software-factory-marketplace"  # the plugin is taken from this marketplace's cache only, never a lookalike
 MAX_PROJECTS_PER_DAY = 5
 LOG_LIMIT = 1_000_000  # bytes; a bigger retro.log moves to retro.log.1
+NO_ACCESS = "Operation not permitted"  # the EPERM text macOS gives a process that lacks Full Disk Access
 
 
 def load_overlay():
@@ -117,13 +118,16 @@ def fail(state, words):
     return 1
 
 
-def scan_due(root):
-    """(due list, failure word or None)."""
+def scan_due(root, log=None):
+    """(due list, failure word or None). With a log, the scan's skip lines (why a project was left out) go there."""
     try:
         scan = subprocess.run([sys.executable, str(root / "scripts" / "retro-scan"), "--due"],
                               capture_output=True, text=True, timeout=SCAN_TIMEOUT)
     except subprocess.TimeoutExpired:
         return [], "scan-timeout"
+    if log and scan.stderr:
+        with open(log, "a", encoding="utf-8") as out:
+            out.write(scan.stderr if scan.stderr.endswith("\n") else scan.stderr + "\n")
     if scan.returncode:
         return [], f"scan-failed {scan.returncode}"
     try:
@@ -132,6 +136,8 @@ def scan_due(root):
         return [], "scan-failed bad-output"
     if not isinstance(due, list) or not all(isinstance(d, dict) and isinstance(d.get("project"), str) for d in due):
         return [], "scan-failed bad-output"
+    if not due and NO_ACCESS in (scan.stderr or ""):  # macOS privacy: launchd runs this Python without folder access
+        return [], f"needs-full-disk-access {sys.executable}"
     return due, None
 
 
@@ -222,16 +228,17 @@ def main():
     root = plugin_root()
     if not root:
         return fail(state, ["plugin-not-found"])
-    due, problem = scan_due(root)
+    log = state / "retro.log"
+    start_log(log)  # every run leaves a line, so a run that found nothing is told apart from one that never ran
+    due, problem = scan_due(root, log)
     if problem:
         return fail(state, [problem])
     if not due:
+        (state / "retro-failed").unlink(missing_ok=True)
         return 0
     due = due[:MAX_PROJECTS_PER_DAY]
     day_dir = state / "retros" / datetime.date.today().isoformat()
     slugs = slug_map([d["project"] for d in due])
-    log = state / "retro.log"
-    start_log(log)
     results = [(d, run_agent(root, state, project_folder(day_dir, d, slugs[d["project"]]), d, slugs[d["project"]], log))
                for d in due]
     failures = [f"{word} {slugs[d['project']]}" for d, word in results if word]
